@@ -713,7 +713,7 @@ export function mapThread(
   };
 }
 
-function mapThreadRequest(
+export function mapThreadRequest(
   request: ThreadConversationState["requests"][number],
 ): UnifiedThread["requests"][number] {
   switch (request.method) {

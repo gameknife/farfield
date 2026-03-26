@@ -748,6 +748,68 @@ function getConversationStateRichness(
   return itemCount * 10 + state.requests.length;
 }
 
+function buildPendingRequestKey(
+  request: NonNullable<ReadThreadResponse["thread"]>["requests"][number],
+): string {
+  return `${request.method}:${String(request.id)}`;
+}
+
+function mergePendingRequests(
+  primary: NonNullable<ReadThreadResponse["thread"]>["requests"],
+  secondary: NonNullable<ReadThreadResponse["thread"]>["requests"],
+): NonNullable<ReadThreadResponse["thread"]>["requests"] {
+  const completedKeys = new Set(
+    [...primary, ...secondary]
+      .filter((request) => request.completed === true)
+      .map(buildPendingRequestKey),
+  );
+  const merged = primary.filter(
+    (request) =>
+      request.completed !== true &&
+      !completedKeys.has(buildPendingRequestKey(request)),
+  );
+  const seenKeys = new Set(merged.map(buildPendingRequestKey));
+
+  for (const request of secondary) {
+    const requestKey = buildPendingRequestKey(request);
+    if (request.completed === true || completedKeys.has(requestKey)) {
+      continue;
+    }
+    if (seenKeys.has(requestKey)) {
+      continue;
+    }
+    seenKeys.add(requestKey);
+    merged.push(request);
+  }
+
+  return merged;
+}
+
+function buildRequestSourceState(
+  liveConversationState: NonNullable<ReadThreadResponse["thread"]> | null,
+  readConversationState: NonNullable<ReadThreadResponse["thread"]> | null,
+  liveStateError:
+    | LiveStateResponse["liveStateError"]
+    | null
+    | undefined,
+): NonNullable<ReadThreadResponse["thread"]> | null {
+  const baseState = liveConversationState ?? readConversationState;
+  if (!baseState) {
+    return null;
+  }
+  if (!liveConversationState || !readConversationState || liveStateError) {
+    return baseState;
+  }
+
+  return {
+    ...baseState,
+    requests: mergePendingRequests(
+      liveConversationState.requests,
+      readConversationState.requests,
+    ),
+  };
+}
+
 function buildApprovalResponse(
   request: PendingApprovalRequest,
   action: "approve" | "deny",
@@ -948,6 +1010,25 @@ function conversationProgressSignature(
   ].join("|");
 }
 
+function requestProgressSignature(
+  state: NonNullable<ReadThreadResponse["thread"]> | null | undefined,
+): string {
+  if (!state) {
+    return "";
+  }
+
+  return state.requests
+    .map((request) =>
+      JSON.stringify({
+        id: String(request.id),
+        method: request.method,
+        completed: request.completed === true,
+        params: request.params,
+      }),
+    )
+    .join("||");
+}
+
 function buildLiveStateSyncSignature(
   state: LiveStateResponse | null | undefined,
 ): string {
@@ -959,10 +1040,12 @@ function buildLiveStateSyncSignature(
   return [
     state.threadId,
     state.ownerClientId ?? "",
+    JSON.stringify(state.liveStateError ?? null),
     String(getConversationStateUpdatedAt(conversationState)),
     String(conversationState?.turns.length ?? -1),
     modeSelectionSignatureFromConversationState(conversationState),
     conversationProgressSignature(conversationState),
+    requestProgressSignature(conversationState),
   ].join("|");
 }
 
@@ -980,6 +1063,7 @@ function buildReadThreadSyncSignature(
     String(conversationState.turns.length),
     modeSelectionSignatureFromConversationState(conversationState),
     conversationProgressSignature(conversationState),
+    requestProgressSignature(conversationState),
   ].join("|");
 }
 
@@ -1008,26 +1092,6 @@ function selectPreferredConversationState(input: {
   }
 
   return input.read;
-}
-
-function selectPreferredRequestSourceState(input: {
-  live: NonNullable<LiveStateResponse["conversationState"]> | null;
-  read: NonNullable<ReadThreadResponse["thread"]> | null;
-}): NonNullable<ReadThreadResponse["thread"]> | null {
-  if (input.live === null || input.read === null) {
-    return selectPreferredConversationState(input);
-  }
-
-  const liveHasRequests = input.live.requests.length > 0;
-  const readHasRequests = input.read.requests.length > 0;
-  if (liveHasRequests && !readHasRequests) {
-    return input.live;
-  }
-  if (readHasRequests && !liveHasRequests) {
-    return input.read;
-  }
-
-  return selectPreferredConversationState(input);
 }
 
 function basenameFromPath(value: string): string {
@@ -1552,11 +1616,16 @@ export function App(): React.JSX.Element {
   );
   const requestSourceState = useMemo(
     () =>
-      selectPreferredRequestSourceState({
-        live: liveState?.conversationState ?? null,
-        read: readThreadState?.thread ?? null,
-      }),
-    [liveState?.conversationState, readThreadState?.thread],
+      buildRequestSourceState(
+        liveState?.conversationState ?? null,
+        readThreadState?.thread ?? null,
+        liveState?.liveStateError,
+      ),
+    [
+      liveState?.conversationState,
+      liveState?.liveStateError,
+      readThreadState?.thread,
+    ],
   );
 
   const pendingRequests = useMemo(() => {
@@ -1668,6 +1737,11 @@ export function App(): React.JSX.Element {
     activeAgentDescriptor,
     "setCollaborationMode",
   );
+  const canEditThreadMode =
+    !selectedThreadId ||
+    (hasResolvedSelectedThreadProvider &&
+      (resolvedSelectedThreadProvider !== "codex" ||
+        Boolean(liveState?.ownerClientId)));
   const canListModels = canUseFeature(activeAgentDescriptor, "listModels");
   const canListCollaborationModes = canUseFeature(
     activeAgentDescriptor,
@@ -4864,6 +4938,7 @@ export function App(): React.JSX.Element {
                                 <Button
                                   type="button"
                                   onClick={() => {
+                                    if (!canEditThreadMode) return;
                                     if (!planModeOption) return;
                                     const nextModeKey = isPlanModeEnabled
                                       ? (defaultModeOption?.mode ??
@@ -4885,7 +4960,9 @@ export function App(): React.JSX.Element {
                                       : "text-muted-foreground hover:text-foreground hover:bg-muted/60"
                                   }`}
                                   disabled={
-                                    !selectedThreadId || !planModeOption
+                                    !selectedThreadId ||
+                                    !planModeOption ||
+                                    !canEditThreadMode
                                   }
                                 >
                                   {isPlanModeEnabled ? (
@@ -4901,6 +4978,7 @@ export function App(): React.JSX.Element {
                                 key={`model:${selectedThreadId ?? "none"}:${appDefaultModelLabel}`}
                                 value={selectedModelId || APP_DEFAULT_VALUE}
                                 onValueChange={(value) => {
+                                  if (!canEditThreadMode) return;
                                   const nextModelId =
                                     value === APP_DEFAULT_VALUE ? "" : value;
                                   setSelectedModelId(nextModelId);
@@ -4910,7 +4988,11 @@ export function App(): React.JSX.Element {
                                     reasoningEffort: selectedReasoningEffort,
                                   });
                                 }}
-                                disabled={!selectedThreadId || !selectedModeKey}
+                                disabled={
+                                  !selectedThreadId ||
+                                  !selectedModeKey ||
+                                  !canEditThreadMode
+                                }
                               >
                                 <SelectTrigger className="h-8 w-[132px] sm:w-[176px] shrink-0 rounded-full border-0 bg-transparent dark:bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:text-foreground focus-visible:ring-0">
                                   <SelectValue placeholder="Model">
@@ -4942,6 +5024,7 @@ export function App(): React.JSX.Element {
                                     selectedReasoningEffort || APP_DEFAULT_VALUE
                                   }
                                   onValueChange={(value) => {
+                                    if (!canEditThreadMode) return;
                                     const nextReasoningEffort =
                                       value === APP_DEFAULT_VALUE ? "" : value;
                                     setSelectedReasoningEffort(
@@ -4954,7 +5037,9 @@ export function App(): React.JSX.Element {
                                     });
                                   }}
                                   disabled={
-                                    !selectedThreadId || !selectedModeKey
+                                    !selectedThreadId ||
+                                    !selectedModeKey ||
+                                    !canEditThreadMode
                                   }
                                 >
                                   <SelectTrigger className="h-8 w-[104px] sm:w-[148px] shrink-0 rounded-full border-0 bg-transparent dark:bg-transparent px-2 text-xs text-muted-foreground shadow-none hover:text-foreground focus-visible:ring-0">

@@ -84,6 +84,11 @@ export interface CodexAppFrameEvent {
   threadId: string | null;
 }
 
+export interface CodexAppServerRequestEvent {
+  threadId: string;
+  request: ThreadConversationRequest;
+}
+
 export interface CodexAgentOptions {
   appExecutable: string;
   socketPath: string;
@@ -123,6 +128,10 @@ export class CodexAgentAdapter implements AgentAdapter {
   private readonly reconnectDelayMs: number;
 
   private readonly threadOwnerById = new Map<string, string>();
+  private readonly pendingAppServerRequestsByThreadId = new Map<
+    string,
+    ThreadConversationRequest[]
+  >();
   private readonly streamEventsByThreadId = new Map<string, IpcFrame[]>();
   private readonly activeTurnIdByThreadId = new Map<string, string>();
   private readonly pendingCollaborationModeByThreadId = new Map<
@@ -148,6 +157,9 @@ export class CodexAgentAdapter implements AgentAdapter {
   >();
   private readonly appFrameListeners = new Set<
     (event: CodexAppFrameEvent) => void
+  >();
+  private readonly appServerRequestListeners = new Set<
+    (event: CodexAppServerRequestEvent) => void
   >();
   private readonly pendingThreadRefreshByThreadId = new Map<
     string,
@@ -290,6 +302,7 @@ export class CodexAgentAdapter implements AgentAdapter {
       void this.handleServerNotification(notification);
     });
     this.appClient.onServerRequest((request) => {
+      this.capturePendingAppServerRequest(request);
       void this.handleServerRequest(request);
     });
   }
@@ -305,6 +318,15 @@ export class CodexAgentAdapter implements AgentAdapter {
     this.appFrameListeners.add(listener);
     return () => {
       this.appFrameListeners.delete(listener);
+    };
+  }
+
+  public onAppServerRequest(
+    listener: (event: CodexAppServerRequestEvent) => void,
+  ): () => void {
+    this.appServerRequestListeners.add(listener);
+    return () => {
+      this.appServerRequestListeners.delete(listener);
     };
   }
 
@@ -522,7 +544,9 @@ export class CodexAgentAdapter implements AgentAdapter {
       }
     }
     const parsedThread = this.applyPendingCollaborationMode(
-      parseThreadConversationState(result.thread),
+      this.mergePendingAppServerRequests(
+        parseThreadConversationState(result.thread),
+      ),
     );
     const existingSnapshot = this.streamSnapshotByThreadId.get(input.threadId);
     const shouldStoreSnapshot =
@@ -691,7 +715,9 @@ export class CodexAgentAdapter implements AgentAdapter {
       () => this.appClient.readThread(input.threadId, false),
     );
     const parsedThreadForRequest = this.applyPendingCollaborationMode(
-      parseThreadConversationState(threadForRequest.thread),
+      this.mergePendingAppServerRequests(
+        parseThreadConversationState(threadForRequest.thread),
+      ),
     );
     const pendingRequest = findPendingRequestWithId(
       parsedThreadForRequest,
@@ -707,6 +733,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     await this.runAppServerCall(() =>
       this.appClient.submitUserInput(input.requestId, parsedResponse),
     );
+    this.removePendingAppServerRequest(input.threadId, input.requestId);
     await this.refreshThreadFromAppServer(
       input.threadId,
       ownerClientIdForResult,
@@ -727,7 +754,7 @@ export class CodexAgentAdapter implements AgentAdapter {
           this.threadOwnerById.get(threadId) ??
           this.lastKnownOwnerClientId ??
           null,
-        conversationState: this.streamSnapshotByThreadId.get(threadId) ?? null,
+        conversationState: this.readMergedLiveSnapshot(threadId),
         liveStateError: this.liveStateErrorByThreadId.get(threadId) ?? null,
       };
     } finally {
@@ -817,6 +844,114 @@ export class CodexAgentAdapter implements AgentAdapter {
     for (const listener of this.appFrameListeners) {
       listener(event);
     }
+  }
+
+  private emitAppServerRequest(event: CodexAppServerRequestEvent): void {
+    for (const listener of this.appServerRequestListeners) {
+      listener(event);
+    }
+  }
+
+  private capturePendingAppServerRequest(
+    request: AppServerServerRequest,
+  ): void {
+    const parsedRequest = ThreadConversationRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      logger.error(
+        {
+          method: request.method,
+          issues: parsedRequest.error.issues,
+        },
+        "codex-app-server-request-parse-failed",
+      );
+      return;
+    }
+
+    const threadId = extractThreadIdFromConversationRequest(parsedRequest.data);
+    if (!threadId) {
+      return;
+    }
+
+    this.upsertPendingAppServerRequest(threadId, parsedRequest.data);
+    this.notifyThreadStateChanged(threadId);
+    this.emitAppServerRequest({
+      threadId,
+      request: parsedRequest.data,
+    });
+  }
+
+  private upsertPendingAppServerRequest(
+    threadId: string,
+    request: ThreadConversationRequest,
+  ): void {
+    const current = this.pendingAppServerRequestsByThreadId.get(threadId) ?? [];
+    const next = current.filter(
+      (entry) => !requestIdsMatch(entry.id, request.id),
+    );
+    if (request.completed === true) {
+      if (next.length === 0) {
+        this.pendingAppServerRequestsByThreadId.delete(threadId);
+        return;
+      }
+      this.pendingAppServerRequestsByThreadId.set(threadId, next);
+      return;
+    }
+    next.push(request);
+    this.pendingAppServerRequestsByThreadId.set(threadId, next);
+  }
+
+  private removePendingAppServerRequest(
+    threadId: string,
+    requestId: UserInputRequestId,
+  ): void {
+    const current = this.pendingAppServerRequestsByThreadId.get(threadId);
+    if (!current) {
+      return;
+    }
+
+    const next = current.filter((entry) => !requestIdsMatch(entry.id, requestId));
+    if (next.length === 0) {
+      this.pendingAppServerRequestsByThreadId.delete(threadId);
+      return;
+    }
+
+    this.pendingAppServerRequestsByThreadId.set(threadId, next);
+  }
+
+  private mergePendingAppServerRequests(
+    state: ThreadConversationState,
+  ): ThreadConversationState {
+    const pendingRequests = this.pendingAppServerRequestsByThreadId.get(state.id);
+    if (!pendingRequests || pendingRequests.length === 0) {
+      return state;
+    }
+
+    const mergedRequests = [...state.requests];
+    for (const pendingRequest of pendingRequests) {
+      if (
+        mergedRequests.some((request) =>
+          requestIdsMatch(request.id, pendingRequest.id),
+        )
+      ) {
+        continue;
+      }
+      mergedRequests.push(pendingRequest);
+    }
+
+    return {
+      ...state,
+      requests: mergedRequests,
+    };
+  }
+
+  private readMergedLiveSnapshot(
+    threadId: string,
+  ): ThreadConversationState | null {
+    const snapshot = this.streamSnapshotByThreadId.get(threadId);
+    if (!snapshot) {
+      return null;
+    }
+    return this.mergePendingAppServerRequests(snapshot);
   }
 
   private async handleServerNotification(
@@ -2207,6 +2342,24 @@ function requestIdsMatch(
   right: UserInputRequestId,
 ): boolean {
   return `${left}` === `${right}`;
+}
+
+function extractThreadIdFromConversationRequest(
+  request: ThreadConversationRequest,
+): string | null {
+  switch (request.method) {
+    case "item/commandExecution/requestApproval":
+    case "item/fileChange/requestApproval":
+    case "item/tool/requestUserInput":
+    case "item/tool/call":
+    case "item/plan/requestImplementation":
+      return request.params.threadId;
+    case "applyPatchApproval":
+    case "execCommandApproval":
+      return request.params.conversationId;
+    case "account/chatgptAuthTokens/refresh":
+      return null;
+  }
 }
 
 function isTerminalTurnStatus(status: string): boolean {

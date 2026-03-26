@@ -46,6 +46,22 @@ describe("parseJsonRpcResponse", () => {
 });
 
 describe("parseJsonRpcIncomingMessage", () => {
+  it("accepts request payload", () => {
+    const parsed = parseJsonRpcIncomingMessage({
+      jsonrpc: "2.0",
+      id: "request-1",
+      method: "item/commandExecution/requestApproval",
+      params: { threadId: "thread-1" }
+    });
+
+    expect(parsed.kind).toBe("request");
+    if (parsed.kind === "request") {
+      expect(parsed.value.id).toBe("request-1");
+      expect(parsed.value.method).toBe("item/commandExecution/requestApproval");
+      expect(parsed.value.params).toEqual({ threadId: "thread-1" });
+    }
+  });
+
   it("accepts notification payload", () => {
     const parsed = parseJsonRpcIncomingMessage({
       jsonrpc: "2.0",
