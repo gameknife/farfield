@@ -142,12 +142,25 @@ export class DesktopIpcClient {
     this.events.emit("connection-state", state);
   }
 
-  private writeFrame(frame: unknown): void {
+  private writeFrame(frame: IpcFrame): void {
     const socket = this.ensureSocket();
     const encoded = Buffer.from(JSON.stringify(frame), "utf8");
     const header = Buffer.alloc(4);
     header.writeUInt32LE(encoded.length, 0);
     socket.write(Buffer.concat([header, encoded]));
+  }
+
+  private tryWriteFrame(frame: IpcFrame): boolean {
+    const socket = this.socket;
+    if (!socket) {
+      return false;
+    }
+
+    const encoded = Buffer.from(JSON.stringify(frame), "utf8");
+    const header = Buffer.alloc(4);
+    header.writeUInt32LE(encoded.length, 0);
+    socket.write(Buffer.concat([header, encoded]));
+    return true;
   }
 
   private respondClientDiscovery(requestId: string): void {
@@ -159,7 +172,7 @@ export class DesktopIpcClient {
       }
     });
 
-    this.writeFrame(response);
+    this.tryWriteFrame(response);
   }
 
   private respondNoHandler(requestId: string): void {
@@ -170,7 +183,7 @@ export class DesktopIpcClient {
       error: "no-handler-for-request"
     });
 
-    this.writeFrame(response);
+    this.tryWriteFrame(response);
   }
 
   private handleData(chunk: Buffer): void {

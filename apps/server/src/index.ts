@@ -820,12 +820,12 @@ const server = http.createServer(async (req, res) => {
       );
       const knownProviders = threadIndex.providers(threadId);
       const resolvedProvider = threadIndex.resolve(threadId);
-      const provider = providerFromQuery ?? resolvedProvider;
+      let provider = providerFromQuery ?? resolvedProvider;
 
-      if (!provider) {
-        if (knownProviders.length > 1) {
-          jsonResponse(res, 409, {
-            ok: false,
+        if (!provider) {
+          if (knownProviders.length > 1) {
+            jsonResponse(res, 409, {
+              ok: false,
             error: {
               code: "threadProviderAmbiguous",
               message: `Thread ${threadId} exists in multiple providers; provider query is required`,
@@ -834,13 +834,12 @@ const server = http.createServer(async (req, res) => {
                 providers: knownProviders,
               },
             },
-          });
-          return;
-        }
-
-        jsonResponse(res, 404, {
-          ok: false,
-          error: {
+            });
+            return;
+          }
+          jsonResponse(res, 404, {
+            ok: false,
+            error: {
             code: "threadNotFound",
             message: `Thread ${threadId} is not registered`,
             details: {

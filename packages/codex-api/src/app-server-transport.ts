@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import path from "node:path";
 import readline from "node:readline";
 import { randomUUID } from "node:crypto";
 import type { AppServerClientRequestMethod } from "@farfield/protocol";
@@ -31,6 +32,18 @@ export interface ChildProcessAppServerTransportOptions {
   onStderr?: (line: string) => void;
 }
 
+export function shouldUseShellForAppServerSpawn(
+  platform: NodeJS.Platform,
+  executablePath: string,
+): boolean {
+  if (platform !== "win32") {
+    return false;
+  }
+
+  const extension = path.extname(executablePath).toLowerCase();
+  return extension.length === 0 || extension === ".cmd" || extension === ".bat";
+}
+
 export class ChildProcessAppServerTransport implements AppServerTransport {
   private readonly executablePath: string;
   private readonly userAgent: string;
@@ -58,6 +71,10 @@ export class ChildProcessAppServerTransport implements AppServerTransport {
       return;
     }
 
+    const useShell = shouldUseShellForAppServerSpawn(
+      process.platform,
+      this.executablePath,
+    );
     const child = spawn(this.executablePath, ["app-server"], {
       cwd: this.cwd,
       env: {
@@ -66,7 +83,8 @@ export class ChildProcessAppServerTransport implements AppServerTransport {
         CODEX_USER_AGENT: this.userAgent,
         CODEX_CLIENT_ID: `farfield-${randomUUID()}`
       },
-      stdio: ["pipe", "pipe", "pipe"]
+      stdio: ["pipe", "pipe", "pipe"],
+      shell: useShell
     });
 
     child.on("exit", (code, signal) => {

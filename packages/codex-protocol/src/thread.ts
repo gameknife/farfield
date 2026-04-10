@@ -200,7 +200,7 @@ export const CommandExecutionItemSchema = z
     id: NonEmptyStringSchema,
     command: z.string(),
     cwd: z.string().optional(),
-    processId: z.string().optional(),
+    processId: z.union([z.string(), z.null()]).optional(),
     status: NonEmptyStringSchema,
     commandActions: z.array(CommandActionSchema).optional(),
     aggregatedOutput: z.union([z.string(), z.null()]).optional(),

@@ -26,7 +26,10 @@ import {
   type UserInputRequestId,
 } from "@farfield/protocol";
 import { logger } from "../../logger.js";
-import { resolveOwnerClientId } from "../../thread-owner.js";
+import {
+  resolveOwnerClientId,
+  resolveThreadOwnerClientId,
+} from "../../thread-owner.js";
 import type {
   AgentAdapter,
   AgentCapabilities,
@@ -71,7 +74,9 @@ export interface CodexAgentOptions {
 }
 
 const ANSI_ESCAPE_REGEX = /\u001B\[[0-?]*[ -/]*[@-~]/g;
+const THREAD_OWNER_WAIT_TIMEOUT_MS = 5_000;
 
+type ThreadOwnerWaiter = (ownerClientId: string) => void;
 export class CodexAgentAdapter implements AgentAdapter {
   public readonly id = "codex";
   public readonly label = "Codex";
@@ -92,6 +97,10 @@ export class CodexAgentAdapter implements AgentAdapter {
   private readonly reconnectDelayMs: number;
 
   private readonly threadOwnerById = new Map<string, string>();
+  private readonly threadOwnerWaitersById = new Map<
+    string,
+    Set<ThreadOwnerWaiter>
+  >();
   private readonly streamEventsByThreadId = new Map<string, IpcFrame[]>();
   private readonly streamSnapshotByThreadId = new Map<
     string,
@@ -210,7 +219,7 @@ export class CodexAgentAdapter implements AgentAdapter {
       }
 
       if (sourceClientId) {
-        this.threadOwnerById.set(conversationId, sourceClientId);
+        this.setThreadOwnerClientId(conversationId, sourceClientId);
       }
 
       try {
@@ -489,7 +498,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     })();
 
     if (ownerClientId && this.isIpcReady()) {
-      this.threadOwnerById.set(input.threadId, ownerClientId);
+      this.setThreadOwnerClientId(input.threadId, ownerClientId);
       try {
         await this.service.sendMessage({
           threadId: input.threadId,
@@ -584,20 +593,50 @@ export class CodexAgentAdapter implements AgentAdapter {
   ): Promise<{ ownerClientId: string }> {
     this.ensureCodexAvailable();
     this.ensureIpcReady();
+    await this.ensureThreadLoaded(input.threadId);
 
-    const ownerClientId = resolveOwnerClientId(
-      this.threadOwnerById,
+    let ownerClientId = await this.waitForThreadOwnerClientId(
       input.threadId,
       input.ownerClientId,
-      this.lastKnownOwnerClientId ?? undefined,
+      THREAD_OWNER_WAIT_TIMEOUT_MS,
     );
 
-    await this.service.setCollaborationMode({
-      threadId: input.threadId,
-      ownerClientId,
-      collaborationMode: input.collaborationMode,
-    });
+    try {
+      await this.service.setCollaborationMode({
+        threadId: input.threadId,
+        ownerClientId,
+        collaborationMode: input.collaborationMode,
+      });
+    } catch (error) {
+      const typedError = error instanceof Error ? error : null;
+      if (!isIpcNoClientFoundError(typedError)) {
+        throw error;
+      }
 
+      this.clearThreadOwnerClientId(input.threadId, ownerClientId);
+      logger.info(
+        {
+          threadId: input.threadId,
+          ownerClientId,
+          error: toErrorMessage(error),
+        },
+        "thread-owner-unreachable-retrying-collaboration-mode",
+      );
+
+      await this.ensureThreadLoaded(input.threadId);
+      ownerClientId = await this.waitForThreadOwnerClientId(
+        input.threadId,
+        undefined,
+        THREAD_OWNER_WAIT_TIMEOUT_MS,
+      );
+      await this.service.setCollaborationMode({
+        threadId: input.threadId,
+        ownerClientId,
+        collaborationMode: input.collaborationMode,
+      });
+    }
+
+    this.setThreadOwnerClientId(input.threadId, ownerClientId);
     return {
       ownerClientId,
     };
@@ -668,7 +707,7 @@ export class CodexAgentAdapter implements AgentAdapter {
       input.ownerClientId,
       this.lastKnownOwnerClientId ?? undefined,
     );
-    this.threadOwnerById.set(input.threadId, ownerClientId);
+    this.setThreadOwnerClientId(input.threadId, ownerClientId);
 
     const pendingIpcRequest = await this.resolvePendingIpcRequest(
       input.threadId,
@@ -733,8 +772,10 @@ export class CodexAgentAdapter implements AgentAdapter {
     const snapshotState = this.streamSnapshotByThreadId.get(threadId) ?? null;
     const snapshotOrigin =
       this.streamSnapshotOriginByThreadId.get(threadId) ?? null;
-    const ownerClientId =
-      this.threadOwnerById.get(threadId) ?? this.lastKnownOwnerClientId ?? null;
+    const ownerClientId = resolveThreadOwnerClientId(
+      this.threadOwnerById,
+      threadId,
+    );
     const rawEvents = this.streamEventsByThreadId.get(threadId) ?? [];
     if (rawEvents.length === 0) {
       return {
@@ -854,10 +895,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     limit: number,
   ): Promise<AgentThreadStreamEvents> {
     return {
-      ownerClientId:
-        this.threadOwnerById.get(threadId) ??
-        this.lastKnownOwnerClientId ??
-        null,
+      ownerClientId: resolveThreadOwnerClientId(this.threadOwnerById, threadId),
       events: (this.streamEventsByThreadId.get(threadId) ?? []).slice(-limit),
     };
   }
@@ -1228,6 +1266,91 @@ export class CodexAgentAdapter implements AgentAdapter {
     }
 
     this.threadTitleById.set(threadId, title);
+  }
+
+  private clearThreadOwnerClientId(
+    threadId: string,
+    ownerClientId: string,
+  ): void {
+    const mappedOwnerClientId = this.threadOwnerById.get(threadId);
+    if (mappedOwnerClientId === ownerClientId) {
+      this.threadOwnerById.delete(threadId);
+    }
+    if (this.lastKnownOwnerClientId === ownerClientId) {
+      this.lastKnownOwnerClientId = null;
+    }
+  }
+
+  private setThreadOwnerClientId(threadId: string, ownerClientId: string): void {
+    const normalizedOwnerClientId = ownerClientId.trim();
+    if (normalizedOwnerClientId.length === 0) {
+      return;
+    }
+
+    this.threadOwnerById.set(threadId, normalizedOwnerClientId);
+
+    const waiters = this.threadOwnerWaitersById.get(threadId);
+    if (!waiters) {
+      return;
+    }
+
+    this.threadOwnerWaitersById.delete(threadId);
+    for (const waiter of waiters) {
+      waiter(normalizedOwnerClientId);
+    }
+  }
+
+  private async waitForThreadOwnerClientId(
+    threadId: string,
+    override: string | undefined,
+    timeoutMs: number,
+  ): Promise<string> {
+    const existingOwnerClientId = resolveThreadOwnerClientId(
+      this.threadOwnerById,
+      threadId,
+      override,
+    );
+    if (existingOwnerClientId) {
+      return existingOwnerClientId;
+    }
+
+    return await new Promise<string>((resolve, reject) => {
+      const waiters =
+        this.threadOwnerWaitersById.get(threadId) ??
+        new Set<ThreadOwnerWaiter>();
+
+      const finish = (nextOwnerClientId: string): void => {
+        clearTimeout(timer);
+        waiters.delete(finish);
+        if (waiters.size === 0) {
+          this.threadOwnerWaitersById.delete(threadId);
+        }
+        resolve(nextOwnerClientId);
+      };
+
+      const timer = setTimeout(() => {
+        waiters.delete(finish);
+        if (waiters.size === 0) {
+          this.threadOwnerWaitersById.delete(threadId);
+        }
+        reject(
+          new Error(
+            "No owner client id is known for this thread yet. Wait for the desktop app to publish a thread event.",
+          ),
+        );
+      }, timeoutMs);
+
+      waiters.add(finish);
+      this.threadOwnerWaitersById.set(threadId, waiters);
+
+      const nextOwnerClientId = resolveThreadOwnerClientId(
+        this.threadOwnerById,
+        threadId,
+      );
+      if (nextOwnerClientId) {
+        finish(nextOwnerClientId);
+      }
+    });
   }
 }
 

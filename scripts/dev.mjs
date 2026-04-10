@@ -3,6 +3,7 @@
 import { spawn, spawnSync } from "node:child_process";
 
 const bunBinary = process.platform === "win32" ? "bun.exe" : "bun";
+const isWindows = process.platform === "win32";
 
 function printHelp() {
   process.stdout.write(
@@ -126,15 +127,38 @@ let firstExit = {
   signal: null
 };
 
+function terminateChildProcess(child, signal) {
+  if (typeof child.pid !== "number") {
+    return;
+  }
+
+  if (isWindows) {
+    const result = spawnSync(
+      "taskkill.exe",
+      ["/PID", String(child.pid), "/T", "/F"],
+      {
+        stdio: "ignore",
+        env: process.env
+      }
+    );
+
+    if (typeof result.status === "number" && result.status === 0) {
+      return;
+    }
+  }
+
+  if (!child.killed) {
+    child.kill(signal);
+  }
+}
+
 const stopChildren = (signal) => {
   if (terminating) {
     return;
   }
   terminating = true;
   for (const child of childProcesses) {
-    if (!child.killed) {
-      child.kill(signal);
-    }
+    terminateChildProcess(child, signal);
   }
 };
 
