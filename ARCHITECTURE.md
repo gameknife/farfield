@@ -2,6 +2,8 @@
 
 Farfield now routes both providers through one strict unified surface.
 
+For the native app packaging model and the Windows host implementation, see [TAURI_ARCHITECTURE.md](/D:/github/farfield/TAURI_ARCHITECTURE.md).
+
 - Server entrypoints for the web app are under `/api/unified/*`.
 - Codex runs through native app-server methods only.
 - OpenCode runs through SDK type mappings only.
