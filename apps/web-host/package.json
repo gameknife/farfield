@@ -1,0 +1,17 @@
+{
+  "name": "@farfield/web-host",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:sidecar": "bun build src/index.ts --compile --outfile ../tauri/src-tauri/binaries/web-host.exe",
+    "start": "node dist/index.js",
+    "test": "vitest run --passWithNoTests",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "zod": "^3.24.1"
+  }
+}

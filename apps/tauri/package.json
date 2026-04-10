@@ -1,0 +1,20 @@
+{
+  "name": "@farfield/tauri",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun run --filter @farfield/web build && bun run build:sidecars && cargo check --manifest-path src-tauri/Cargo.toml",
+    "lint": "bun run --filter @farfield/web build && bun run build:sidecars && cargo check --manifest-path src-tauri/Cargo.toml",
+    "typecheck": "bun run --filter @farfield/web build && bun run build:sidecars && cargo check --manifest-path src-tauri/Cargo.toml",
+    "build:sidecars": "bun run --filter @farfield/server build:sidecar && bun run --filter @farfield/web-host build:sidecar",
+    "tauri:dev": "bunx tauri dev",
+    "tauri:build": "bun run --filter @farfield/web build && bun run build:sidecars && bunx tauri build"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.0.0"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.0.0"
+  }
+}

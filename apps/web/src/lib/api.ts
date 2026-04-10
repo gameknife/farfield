@@ -31,10 +31,18 @@ import {
   clearStoredServerTarget,
   getDefaultServerBaseUrl as getDefaultStoredServerBaseUrl,
   parseServerBaseUrl,
+  parseSharedSecret,
   readStoredServerTarget,
   resolveServerBaseUrl,
-  saveServerBaseUrl,
+  resolveSharedSecret,
+  saveServerTarget,
 } from "./server-target";
+import {
+  NativeConnectionConfigSchema,
+  type NativeBootstrap,
+  type NativeConnectionConfig,
+  type NativeRuntimeStatus,
+} from "./native-shell";
 
 const ApiEnvelopeSchema = z
   .object({
@@ -321,6 +329,30 @@ const PROVIDER_LABELS: Record<UnifiedProviderId, string> = {
 
 export type AgentId = UnifiedProviderId;
 
+const EffectiveConnectionModeSchema = z.enum([
+  "automatic",
+  "stored",
+  "host",
+  "remoteClient",
+]);
+
+const EffectiveServerConnectionSchema = z
+  .object({
+    mode: EffectiveConnectionModeSchema,
+    baseUrl: z.string().url(),
+    sharedSecret: z.union([z.string(), z.null()]),
+    hasSavedTarget: z.boolean(),
+  })
+  .strict();
+
+type EffectiveServerConnection = z.infer<typeof EffectiveServerConnectionSchema>;
+
+interface UnifiedEventsSubscription {
+  close(): void;
+}
+
+let nativeBootstrap: NativeBootstrap | null = null;
+
 class UnifiedCommandApiError extends Error {
   public readonly code: string;
   public readonly details?: JsonValue;
@@ -353,7 +385,7 @@ export class ApiRequestError extends Error {
 }
 
 export function getServerBaseUrl(): string {
-  return resolveServerBaseUrl();
+  return getEffectiveServerConnection().baseUrl;
 }
 
 export function getSavedServerBaseUrl(): string | null {
@@ -365,27 +397,140 @@ export function getDefaultServerBaseUrl(): string {
   return getDefaultStoredServerBaseUrl();
 }
 
-export function setServerBaseUrl(value: string): string {
-  return saveServerBaseUrl(value).baseUrl;
+export function getSharedSecret(): string | null {
+  return getEffectiveServerConnection().sharedSecret;
 }
 
-export function clearServerBaseUrl(): void {
-  clearStoredServerTarget();
+export function getSavedSharedSecret(): string | null {
+  const stored = readStoredServerTarget();
+  return stored?.sharedSecret ?? null;
 }
 
 export function normalizeServerBaseUrl(value: string): string {
   return parseServerBaseUrl(value);
 }
 
+export function normalizeSharedSecret(value: string): string {
+  return parseSharedSecret(value);
+}
+
 export function getUnifiedEventsUrl(baseUrlOverride?: string): string {
   return buildServerUrl("/api/unified/events", baseUrlOverride);
+}
+
+export function setNativeBootstrap(nextBootstrap: NativeBootstrap | null): void {
+  nativeBootstrap = nextBootstrap;
+}
+
+export function getNativeBootstrap(): NativeBootstrap | null {
+  return nativeBootstrap;
+}
+
+export function getEffectiveServerConnection(): EffectiveServerConnection {
+  if (nativeBootstrap !== null) {
+    return EffectiveServerConnectionSchema.parse({
+      mode: nativeBootstrap.connection.mode,
+      baseUrl: nativeBootstrap.connection.serverBaseUrl,
+      sharedSecret: nativeBootstrap.connection.sharedSecret,
+      hasSavedTarget: nativeBootstrap.connection.mode === "remoteClient",
+    });
+  }
+
+  const stored = readStoredServerTarget();
+  if (stored !== null) {
+    return EffectiveServerConnectionSchema.parse({
+      mode: "stored",
+      baseUrl: stored.baseUrl,
+      sharedSecret: stored.sharedSecret,
+      hasSavedTarget: true,
+    });
+  }
+
+  return EffectiveServerConnectionSchema.parse({
+    mode: "automatic",
+    baseUrl: resolveServerBaseUrl(),
+    sharedSecret: resolveSharedSecret(),
+    hasSavedTarget: false,
+  });
+}
+
+export async function saveConnectionConfig(input: {
+  baseUrl: string;
+  sharedSecret: string;
+  saveNativeConnection?: (
+    connection: z.infer<typeof NativeConnectionConfigSchema>,
+  ) => Promise<NativeConnectionConfig | null>;
+}): Promise<EffectiveServerConnection> {
+  const normalizedBaseUrl = parseServerBaseUrl(input.baseUrl);
+  const normalizedSharedSecret = parseSharedSecret(input.sharedSecret);
+
+  if (nativeBootstrap !== null && input.saveNativeConnection) {
+    const nextNativeConnection = NativeConnectionConfigSchema.parse({
+      version: 1,
+      mode: "remoteClient",
+      serverBaseUrl: normalizedBaseUrl,
+      sharedSecret: normalizedSharedSecret,
+    });
+    const savedNativeConnection =
+      await input.saveNativeConnection(nextNativeConnection);
+    if (savedNativeConnection !== null) {
+      nativeBootstrap = {
+        connection: savedNativeConnection,
+        runtime:
+          nativeBootstrap.runtime.activeMode === "remoteClient"
+            ? nativeBootstrap.runtime
+            : {
+                ...nativeBootstrap.runtime,
+                activeMode: "remoteClient",
+              },
+      };
+      return getEffectiveServerConnection();
+    }
+  }
+
+  saveServerTarget({
+    baseUrl: normalizedBaseUrl,
+    sharedSecret: normalizedSharedSecret,
+  });
+  return getEffectiveServerConnection();
+}
+
+export function clearConnectionConfig(): EffectiveServerConnection {
+  clearStoredServerTarget();
+  return getEffectiveServerConnection();
+}
+
+function applyAuthorizationHeader(
+  headers: Headers,
+  sharedSecret: string | null,
+): void {
+  if (sharedSecret === null) {
+    return;
+  }
+  headers.set("Authorization", `Bearer ${sharedSecret}`);
+}
+
+function buildRequestInit(
+  init: RequestInit | undefined,
+  sharedSecret: string | null,
+): RequestInit {
+  const headers = new Headers(init?.headers);
+  applyAuthorizationHeader(headers, sharedSecret);
+  return {
+    ...init,
+    headers,
+  };
 }
 
 async function requestJson(
   path: string,
   init?: RequestInit,
 ): Promise<{ response: Response; payload: JsonValue }> {
-  const response = await fetch(buildServerUrl(path), init);
+  const connection = getEffectiveServerConnection();
+  const response = await fetch(
+    buildServerUrl(path, connection.baseUrl),
+    buildRequestInit(init, connection.sharedSecret),
+  );
   const payload = JsonValueSchema.parse(await response.json());
   return {
     response,
@@ -452,6 +597,147 @@ async function requestEnvelope<T>(
   }
 
   return schema.parse(payload);
+}
+
+function parseSseEventBlocks(buffer: string): {
+  events: string[];
+  remainder: string;
+} {
+  const normalized = buffer.replace(/\r\n/g, "\n");
+  const segments = normalized.split("\n\n");
+  if (segments.length === 0) {
+    return {
+      events: [],
+      remainder: normalized,
+    };
+  }
+
+  const remainder = segments.pop() ?? "";
+  const events = segments
+    .map((segment) =>
+      segment
+        .split("\n")
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice("data:".length).trimStart())
+        .join("\n"),
+    )
+    .filter((eventData) => eventData.length > 0);
+
+  return {
+    events,
+    remainder,
+  };
+}
+
+async function streamUnifiedEventsWithFetch(
+  url: string,
+  sharedSecret: string,
+  handlers: {
+    onOpen: () => void;
+    onMessage: (eventData: string) => void;
+    onError: () => void;
+  },
+): Promise<UnifiedEventsSubscription> {
+  const controller = new AbortController();
+
+  void (async () => {
+    try {
+      const response = await fetch(
+        url,
+        buildRequestInit(
+          {
+            signal: controller.signal,
+            headers: {
+              Accept: "text/event-stream",
+            },
+          },
+          sharedSecret,
+        ),
+      );
+
+      if (!response.ok) {
+        throw new Error(`Event stream request failed with status ${String(response.status)}`);
+      }
+
+      if (response.body === null) {
+        throw new Error("Event stream response did not include a body");
+      }
+
+      handlers.onOpen();
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          break;
+        }
+        buffer += decoder.decode(chunk.value, { stream: true });
+        const parsedBuffer = parseSseEventBlocks(buffer);
+        buffer = parsedBuffer.remainder;
+        for (const eventData of parsedBuffer.events) {
+          handlers.onMessage(eventData);
+        }
+      }
+    } catch (error) {
+      if (controller.signal.aborted) {
+        return;
+      }
+      if (error instanceof Error && error.name === "AbortError") {
+        return;
+      }
+      handlers.onError();
+    }
+  })();
+
+  return {
+    close(): void {
+      controller.abort();
+    },
+  };
+}
+
+function streamUnifiedEventsWithEventSource(
+  url: string,
+  handlers: {
+    onOpen: () => void;
+    onMessage: (eventData: string) => void;
+    onError: () => void;
+  },
+): UnifiedEventsSubscription {
+  const source = new EventSource(url);
+  source.onopen = () => {
+    handlers.onOpen();
+  };
+  source.onmessage = (event: MessageEvent<string>) => {
+    handlers.onMessage(event.data);
+  };
+  source.onerror = () => {
+    handlers.onError();
+  };
+
+  return {
+    close(): void {
+      source.close();
+    },
+  };
+}
+
+export async function openUnifiedEventsStream(handlers: {
+  onOpen: () => void;
+  onMessage: (eventData: string) => void;
+  onError: () => void;
+}): Promise<UnifiedEventsSubscription> {
+  const connection = getEffectiveServerConnection();
+  const url = getUnifiedEventsUrl(connection.baseUrl);
+
+  if (connection.sharedSecret === null) {
+    return streamUnifiedEventsWithEventSource(url, handlers);
+  }
+
+  return streamUnifiedEventsWithFetch(url, connection.sharedSecret, handlers);
 }
 
 async function runUnifiedCommand(

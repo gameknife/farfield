@@ -1,0 +1,38 @@
+{
+  "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
+  "productName": "Farfield",
+  "version": "0.1.0",
+  "identifier": "app.farfield",
+  "build": {
+    "frontendDist": "../../web/dist",
+    "beforeBuildCommand": "bun run --filter @farfield/web build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Farfield",
+        "width": 1440,
+        "height": 980,
+        "minWidth": 960,
+        "minHeight": 680
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": [
+      "icons/icon.ico",
+      "icons/icon.png"
+    ],
+    "resources": [
+      "../../web/dist",
+      "binaries/farfield-server.exe",
+      "binaries/web-host.exe"
+    ]
+  }
+}

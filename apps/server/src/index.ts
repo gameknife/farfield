@@ -18,6 +18,10 @@ import {
 } from "./http-schemas.js";
 import { logger } from "./logger.js";
 import {
+  isRequestAuthorized,
+  resolveRemoteAuthConfig,
+} from "./auth.js";
+import {
   parseServerCliOptions,
   formatServerHelpText,
 } from "./agents/cli-options.js";
@@ -150,7 +154,7 @@ function jsonResponse(
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": encoded.length,
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "content-type",
+    "Access-Control-Allow-Headers": "authorization,content-type",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   });
   res.end(encoded);
@@ -236,6 +240,10 @@ const configuredUnifiedProviders: UnifiedProviderId[] = [...configuredAgentIds];
 const codexExecutable = resolveCodexExecutablePath();
 const ipcSocketPath = resolveIpcSocketPath();
 const gitCommit = resolveGitCommitHash();
+const remoteAuthConfig = resolveRemoteAuthConfig(
+  HOST,
+  process.env["FARFIELD_SHARED_SECRET"],
+);
 
 const history: HistoryEntry[] = [];
 const historyById = new Map<string, unknown>();
@@ -461,8 +469,15 @@ function printStartupBanner(): void {
     paint("Remote access (recommended):", "yellow", { bold: true }),
     "1. Keep this server private. Do not expose it to the public internet.",
     "2. Put it behind a VPN, such as Tailscale.",
-    "3. In farfield.app, open Settings and set your server URL.",
+    "3. In farfield.app, open Settings and set your server URL and shared secret.",
     "",
+    ...(remoteAuthConfig.sharedSecret === null
+      ? []
+      : [
+          paint("Shared secret:", "yellow", { bold: true }),
+          remoteAuthConfig.sharedSecret,
+          "",
+        ]),
     paint("Setup guide:", "cyan", { bold: true }),
     paint("https://github.com/achimala/farfield#readme", "blue", {
       underline: true,
@@ -499,6 +514,17 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${HOST}:${PORT}`);
     const pathname = url.pathname;
     const segments = pathname.split("/").filter(Boolean);
+
+    if (pathname.startsWith("/api/") && !isRequestAuthorized(req, remoteAuthConfig)) {
+      jsonResponse(res, 401, {
+        ok: false,
+        error: {
+          code: "unauthorized",
+          message: "Missing or invalid shared secret",
+        },
+      });
+      return;
+    }
 
     if (req.method === "GET" && pathname === "/api/health") {
       jsonResponse(res, 200, {

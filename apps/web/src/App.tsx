@@ -28,10 +28,11 @@ import {
 } from "lucide-react";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  clearServerBaseUrl,
+  clearConnectionConfig,
   createThread,
   getDefaultServerBaseUrl,
   getAccountRateLimits,
+  getEffectiveServerConnection,
   getHealth,
   getHistoryEntry,
   getLiveState,
@@ -39,9 +40,11 @@ import {
   getPendingThreadRequests,
   getPendingUserInputRequests,
   getSavedServerBaseUrl,
+  getSavedSharedSecret,
   getServerBaseUrl,
   getStreamEvents,
-  getUnifiedEventsUrl,
+  normalizeSharedSecret,
+  openUnifiedEventsStream,
   readThread,
   getTraceStatus,
   interruptThread,
@@ -53,12 +56,18 @@ import {
   markTrace,
   sendMessage,
   setCollaborationMode,
+  setNativeBootstrap,
+  saveConnectionConfig,
   startTrace,
   stopTrace,
   submitUserInput,
-  setServerBaseUrl,
   type AgentId,
 } from "@/lib/api";
+import {
+  loadNativeBootstrap,
+  saveNativeConnectionConfig,
+  type NativeRuntimeStatus,
+} from "@/lib/native-shell";
 import {
   groupColors,
   readCollapseMap,
@@ -1064,7 +1073,9 @@ export function App(): React.JSX.Element {
     () => parseUiStateFromPath(window.location.pathname),
     [],
   );
-  const initialServerBaseUrl = useMemo(() => getServerBaseUrl(), []);
+  const initialConnection = useMemo(() => getEffectiveServerConnection(), []);
+  const initialServerBaseUrl = initialConnection.baseUrl;
+  const initialSharedSecret = initialConnection.sharedSecret ?? "";
   const initialHasSavedServerBaseUrl = useMemo(
     () => getSavedServerBaseUrl() !== null,
     [],
@@ -1135,10 +1146,18 @@ export function App(): React.JSX.Element {
     useState<string>(initialServerBaseUrl);
   const [serverBaseUrlDraft, setServerBaseUrlDraft] =
     useState<string>(initialServerBaseUrl);
+  const [sharedSecret, setSharedSecret] = useState<string>(initialSharedSecret);
+  const [sharedSecretDraft, setSharedSecretDraft] =
+    useState<string>(initialSharedSecret);
   const [hasSavedServerTarget, setHasSavedServerTarget] = useState<boolean>(
     initialHasSavedServerBaseUrl,
   );
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
+  const [isConnectionReady, setIsConnectionReady] = useState(false);
+  const [nativeRuntimeStatus, setNativeRuntimeStatus] =
+    useState<NativeRuntimeStatus | null>(null);
+  const [isNativeManagedConnection, setIsNativeManagedConnection] =
+    useState(false);
 
   /* UI state */
   const [activeTab, setActiveTab] = useState<"chat" | "debug">(
@@ -1254,11 +1273,8 @@ export function App(): React.JSX.Element {
   const selectedAgentLabel = selectedAgentDescriptor?.label ?? "Agent";
   const reversedHistory = useMemo(() => history.slice().reverse(), [history]);
   const hasServerBaseUrlDraftChanges =
-    serverBaseUrlDraft.trim() !== serverBaseUrl;
-  const unifiedEventsUrl = useMemo(
-    () => getUnifiedEventsUrl(serverBaseUrl),
-    [serverBaseUrl],
-  );
+    serverBaseUrlDraft.trim() !== serverBaseUrl ||
+    sharedSecretDraft.trim() !== sharedSecret;
   const upsertSidebarThread = useCallback((threadSummary: Thread) => {
     setThreads((previousThreads) => {
       const nextThreads = (() => {
@@ -1751,6 +1767,44 @@ export function App(): React.JSX.Element {
       health?.state.ipcConnected === false ||
       health?.state.ipcInitialized === false
     : !openCodeConnected;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void (async () => {
+      try {
+        const nativeBootstrap = await loadNativeBootstrap();
+        if (cancelled) {
+          return;
+        }
+
+        if (nativeBootstrap !== null) {
+          setNativeBootstrap(nativeBootstrap);
+          setNativeRuntimeStatus(nativeBootstrap.runtime);
+          setIsNativeManagedConnection(true);
+          setServerBaseUrlState(nativeBootstrap.connection.serverBaseUrl);
+          setServerBaseUrlDraft(nativeBootstrap.connection.serverBaseUrl);
+          setSharedSecret(nativeBootstrap.connection.sharedSecret);
+          setSharedSecretDraft(nativeBootstrap.connection.sharedSecret);
+          setHasSavedServerTarget(nativeBootstrap.connection.mode === "remoteClient");
+        }
+      } catch (error) {
+        if (cancelled) {
+          return;
+        }
+        setError(toErrorMessage(error));
+      } finally {
+        if (!cancelled) {
+          setIsConnectionReady(true);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   /* Data loading */
   const loadCoreData = useCallback(async () => {
     const shouldLoadDebugData = activeTabRef.current === "debug";
@@ -2296,25 +2350,33 @@ export function App(): React.JSX.Element {
   const saveServerTarget = useCallback(async () => {
     try {
       setError("");
-      const normalizedBaseUrl = setServerBaseUrl(serverBaseUrlDraft);
-      setServerBaseUrlState(normalizedBaseUrl);
-      setServerBaseUrlDraft(normalizedBaseUrl);
-      setHasSavedServerTarget(true);
+      const nextConnection = await saveConnectionConfig({
+        baseUrl: serverBaseUrlDraft,
+        sharedSecret: sharedSecretDraft,
+        saveNativeConnection: saveNativeConnectionConfig,
+      });
+      setServerBaseUrlState(nextConnection.baseUrl);
+      setServerBaseUrlDraft(nextConnection.baseUrl);
+      setSharedSecret(nextConnection.sharedSecret ?? "");
+      setSharedSecretDraft(nextConnection.sharedSecret ?? "");
+      setHasSavedServerTarget(nextConnection.hasSavedTarget);
       agentCacheRef.current = null;
       providerCatalogCacheRef.current.clear();
       await refreshAll();
     } catch (e) {
       setError(toErrorMessage(e));
     }
-  }, [refreshAll, serverBaseUrlDraft]);
+  }, [refreshAll, serverBaseUrlDraft, sharedSecretDraft]);
 
   const useDefaultServerTarget = useCallback(async () => {
     try {
       setError("");
-      clearServerBaseUrl();
-      const defaultBaseUrl = getDefaultServerBaseUrl();
+      const nextConnection = clearConnectionConfig();
+      const defaultBaseUrl = nextConnection.baseUrl ?? getDefaultServerBaseUrl();
       setServerBaseUrlState(defaultBaseUrl);
       setServerBaseUrlDraft(defaultBaseUrl);
+      setSharedSecret("");
+      setSharedSecretDraft("");
       setHasSavedServerTarget(false);
       agentCacheRef.current = null;
       providerCatalogCacheRef.current.clear();
@@ -2367,6 +2429,9 @@ export function App(): React.JSX.Element {
   }, [activeTab, selectedThreadId]);
 
   useEffect(() => {
+    if (!isConnectionReady) {
+      return;
+    }
     void (async () => {
       try {
         setError("");
@@ -2387,17 +2452,23 @@ export function App(): React.JSX.Element {
         setError(toErrorMessage(error));
       }
     })();
-  }, []);
+  }, [isConnectionReady]);
 
   useEffect(() => {
+    if (!isConnectionReady) {
+      return;
+    }
     const loadCore = loadCoreDataRef.current;
     if (!loadCore) {
       return;
     }
     void loadCore().catch((error) => setError(toErrorMessage(error)));
-  }, [selectedAgentId]);
+  }, [isConnectionReady, selectedAgentId]);
 
   useEffect(() => {
+    if (!isConnectionReady) {
+      return;
+    }
     const refreshCoreData = () => {
       if (document.visibilityState === "hidden") {
         return;
@@ -2455,9 +2526,12 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
     };
-  }, []);
+  }, [isConnectionReady]);
 
   useEffect(() => {
+    if (!isConnectionReady) {
+      return;
+    }
     const stopSelectedThreadRefresh = () => {
       if (selectedThreadRefreshIntervalRef.current === null) {
         return;
@@ -2525,7 +2599,7 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
     };
-  }, [selectedThreadId]);
+  }, [isConnectionReady, selectedThreadId]);
 
   useEffect(() => {
     if (!selectedThreadId) {
@@ -2556,8 +2630,11 @@ export function App(): React.JSX.Element {
   }, [selectedThreadId]);
 
   useEffect(() => {
+    if (!isConnectionReady) {
+      return;
+    }
     let disposed = false;
-    let source: EventSource | null = null;
+    let source: { close(): void } | null = null;
     let reconnectTimer: number | null = null;
     let reconnectDelayMs = 1000;
     let hasOpenedConnection = false;
@@ -2643,80 +2720,90 @@ export function App(): React.JSX.Element {
         return;
       }
 
-      source = new EventSource(unifiedEventsUrl);
-      source.onopen = () => {
-        reconnectDelayMs = 1000;
-        if (hasOpenedConnection) {
-          return;
-        }
-        hasOpenedConnection = true;
-        scheduleRefresh(
-          true,
-          activeTabRef.current === "debug",
-          Boolean(selectedThreadIdRef.current),
-        );
-      };
-
-      source.onmessage = (event: MessageEvent<string>) => {
-        let refreshCore = false;
-        const refreshHistory = false;
-        let refreshSelectedThread = false;
-
-        try {
-          const parsedEventResult = UnifiedEventSchema.safeParse(
-            JSON.parse(event.data),
-          );
-          if (!parsedEventResult.success) {
-            setError(
-              `Invalid unified event payload: ${parsedEventResult.error.issues
-                .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
-                .join(" | ")}`,
-            );
-            refreshCore = true;
-          } else {
-            const parsedEvent = parsedEventResult.data;
-            if (parsedEvent.kind === "providerStateChanged") {
-              agentCacheRef.current = null;
-              providerCatalogCacheRef.current.clear();
-              refreshCore = true;
-            } else if (parsedEvent.kind === "threadUpdated") {
-              refreshCore = true;
-              if (
-                selectedThreadIdRef.current &&
-                parsedEvent.threadId === selectedThreadIdRef.current
-              ) {
-                refreshSelectedThread = true;
-              }
-            } else if (
-              parsedEvent.kind === "userInputRequested" ||
-              parsedEvent.kind === "userInputResolved"
-            ) {
-              if (
-                selectedThreadIdRef.current &&
-                parsedEvent.threadId === selectedThreadIdRef.current
-              ) {
-                refreshCore = true;
-                refreshSelectedThread = true;
-              }
-            } else if (parsedEvent.kind === "error") {
-              refreshCore = true;
-            }
+      void openUnifiedEventsStream({
+        onOpen: () => {
+          reconnectDelayMs = 1000;
+          if (hasOpenedConnection) {
+            return;
           }
-        } catch (error) {
-          setError(`Invalid unified event payload: ${toErrorMessage(error)}`);
-          refreshCore = true;
-        }
+          hasOpenedConnection = true;
+          scheduleRefresh(
+            true,
+            activeTabRef.current === "debug",
+            Boolean(selectedThreadIdRef.current),
+          );
+        },
+        onMessage: (eventData) => {
+          let refreshCore = false;
+          const refreshHistory = false;
+          let refreshSelectedThread = false;
 
-        scheduleRefresh(refreshCore, refreshHistory, refreshSelectedThread);
-      };
+          try {
+            const parsedEventResult = UnifiedEventSchema.safeParse(
+              JSON.parse(eventData),
+            );
+            if (!parsedEventResult.success) {
+              setError(
+                `Invalid unified event payload: ${parsedEventResult.error.issues
+                  .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
+                  .join(" | ")}`,
+              );
+              refreshCore = true;
+            } else {
+              const parsedEvent = parsedEventResult.data;
+              if (parsedEvent.kind === "providerStateChanged") {
+                agentCacheRef.current = null;
+                providerCatalogCacheRef.current.clear();
+                refreshCore = true;
+              } else if (parsedEvent.kind === "threadUpdated") {
+                refreshCore = true;
+                if (
+                  selectedThreadIdRef.current &&
+                  parsedEvent.threadId === selectedThreadIdRef.current
+                ) {
+                  refreshSelectedThread = true;
+                }
+              } else if (
+                parsedEvent.kind === "userInputRequested" ||
+                parsedEvent.kind === "userInputResolved"
+              ) {
+                if (
+                  selectedThreadIdRef.current &&
+                  parsedEvent.threadId === selectedThreadIdRef.current
+                ) {
+                  refreshCore = true;
+                  refreshSelectedThread = true;
+                }
+              } else if (parsedEvent.kind === "error") {
+                refreshCore = true;
+              }
+            }
+          } catch (error) {
+            setError(`Invalid unified event payload: ${toErrorMessage(error)}`);
+            refreshCore = true;
+          }
 
-      source.onerror = () => {
-        if (source) {
-          source.close();
-          source = null;
-        }
-        scheduleReconnect();
-      };
+          scheduleRefresh(refreshCore, refreshHistory, refreshSelectedThread);
+        },
+        onError: () => {
+          if (source) {
+            source.close();
+            source = null;
+          }
+          scheduleReconnect();
+        },
+      })
+        .then((subscription) => {
+          if (disposed) {
+            subscription.close();
+            return;
+          }
+          source = subscription;
+        })
+        .catch((error) => {
+          setError(toErrorMessage(error));
+          scheduleReconnect();
+        });
     };
 
     const closeEvents = () => {
@@ -2765,7 +2852,7 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pageshow", onPageShow);
       closeEvents();
     };
-  }, [unifiedEventsUrl]);
+  }, [isConnectionReady, serverBaseUrl, sharedSecret]);
 
   useEffect(() => {
     if (!activeRequest) {
@@ -4790,7 +4877,7 @@ export function App(): React.JSX.Element {
                 <div className="space-y-1.5">
                   <Label className="text-sm font-medium">Server</Label>
                   <div className="text-xs text-muted-foreground">
-                    Use your Tailscale HTTPS URL.
+                    Enter the Farfield server origin for remote client mode.
                   </div>
                   <Input
                     value={serverBaseUrlDraft}
@@ -4806,6 +4893,26 @@ export function App(): React.JSX.Element {
                   />
                 </div>
 
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-medium">Shared Secret</Label>
+                  <div className="text-xs text-muted-foreground">
+                    Required for any non-local connection to port 4311.
+                  </div>
+                  <Input
+                    value={sharedSecretDraft}
+                    onChange={(e) => setSharedSecretDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        void saveServerTarget();
+                      }
+                    }}
+                    placeholder="Paste the host secret"
+                    className="h-9 text-sm"
+                    type="password"
+                  />
+                </div>
+
                 <div className="flex gap-2">
                   <Button
                     type="button"
@@ -4816,32 +4923,55 @@ export function App(): React.JSX.Element {
                     className="h-8 text-xs"
                     disabled={
                       serverBaseUrlDraft.trim().length === 0 ||
+                      sharedSecretDraft.trim().length === 0 ||
                       !hasServerBaseUrlDraftChanges
                     }
                   >
                     Save
                   </Button>
-                  <Button
-                    type="button"
-                    onClick={() => {
-                      void useDefaultServerTarget();
-                    }}
-                    variant="outline"
-                    className="h-8 text-xs"
-                  >
-                    Use automatic
-                  </Button>
+                  {!isNativeManagedConnection && (
+                    <Button
+                      type="button"
+                      onClick={() => {
+                        void useDefaultServerTarget();
+                      }}
+                      variant="outline"
+                      className="h-8 text-xs"
+                    >
+                      Use automatic
+                    </Button>
+                  )}
                 </div>
 
                 <div className="text-xs text-muted-foreground break-all">
                   Active: {serverBaseUrl}
                 </div>
                 <div className="text-xs text-muted-foreground">
-                  Mode:{" "}
-                  {hasSavedServerTarget
-                    ? "Saved server target"
-                    : "Automatic server target"}
+                  Secret: {sharedSecret.length > 0 ? "Configured" : "Not set"}
                 </div>
+                <div className="text-xs text-muted-foreground">
+                  Mode:{" "}
+                  {isNativeManagedConnection
+                    ? nativeRuntimeStatus?.activeMode === "host"
+                      ? "Native host mode"
+                      : "Native remote-client mode"
+                    : hasSavedServerTarget
+                      ? "Saved server target"
+                      : "Automatic server target"}
+                </div>
+                {nativeRuntimeStatus && (
+                  <>
+                    <div className="text-xs text-muted-foreground">
+                      4311: {nativeRuntimeStatus.server4311Status.state}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      4312: {nativeRuntimeStatus.web4312Status.state}
+                    </div>
+                    <div className="text-xs text-muted-foreground break-all">
+                      Bind: {nativeRuntimeStatus.resolvedBindAddress}
+                    </div>
+                  </>
+                )}
               </div>
             </motion.div>
           </motion.div>

@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const STORAGE_KEY = "farfield.server-target.v1";
+const STORAGE_KEY = "farfield.server-target.v2";
 const DEFAULT_SERVER_PORT = 4311;
 
 const ServerProtocolSchema = z.enum(["http:", "https:"]);
@@ -48,12 +48,40 @@ const ServerBaseUrlSchema = z
     return url.toString().replace(/\/$/, "");
   });
 
-const StoredServerTargetSchema = z
+const SharedSecretSchema = z
+  .string()
+  .trim()
+  .min(1, "Shared secret is required")
+  .max(512, "Shared secret must be at most 512 characters");
+
+const LegacyStoredServerTargetSchema = z
   .object({
     version: z.literal(1),
     baseUrl: ServerBaseUrlSchema,
   })
   .strict();
+
+const CurrentStoredServerTargetSchema = z
+  .object({
+    version: z.literal(2),
+    baseUrl: ServerBaseUrlSchema,
+    sharedSecret: z.union([SharedSecretSchema, z.null()]),
+  })
+  .strict();
+
+const StoredServerTargetSchema = z
+  .union([CurrentStoredServerTargetSchema, LegacyStoredServerTargetSchema])
+  .transform((value) => {
+    if (value.version === 1) {
+      return {
+        version: 2 as const,
+        baseUrl: value.baseUrl,
+        sharedSecret: null,
+      };
+    }
+
+    return value;
+  });
 
 const StoredServerTargetTextSchema = z.string().transform((raw, ctx) => {
   try {
@@ -75,7 +103,11 @@ const ApiPathSchema = z
 export type StoredServerTarget = z.infer<typeof StoredServerTargetSchema>;
 
 function isLocalHost(hostname: string): boolean {
-  return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1";
+  return (
+    hostname === "localhost" ||
+    hostname === "127.0.0.1" ||
+    hostname === "::1"
+  );
 }
 
 export function getDefaultServerBaseUrl(): string {
@@ -110,11 +142,21 @@ export function parseServerBaseUrl(value: string): string {
   return ServerBaseUrlSchema.parse(value);
 }
 
-export function saveServerBaseUrl(value: string): StoredServerTarget {
-  const parsedBaseUrl = parseServerBaseUrl(value);
+export function parseSharedSecret(value: string): string {
+  return SharedSecretSchema.parse(value);
+}
+
+export function saveServerTarget(value: {
+  baseUrl: string;
+  sharedSecret: string | null;
+}): StoredServerTarget {
+  const parsedBaseUrl = parseServerBaseUrl(value.baseUrl);
+  const parsedSharedSecret =
+    value.sharedSecret === null ? null : parseSharedSecret(value.sharedSecret);
   const next: StoredServerTarget = {
-    version: 1,
+    version: 2,
     baseUrl: parsedBaseUrl,
+    sharedSecret: parsedSharedSecret,
   };
 
   if (typeof window !== "undefined") {
@@ -137,6 +179,11 @@ export function resolveServerBaseUrl(): string {
     return stored.baseUrl;
   }
   return getDefaultServerBaseUrl();
+}
+
+export function resolveSharedSecret(): string | null {
+  const stored = readStoredServerTarget();
+  return stored?.sharedSecret ?? null;
 }
 
 export function buildServerUrl(path: string, baseUrlOverride?: string): string {
