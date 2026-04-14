@@ -606,6 +606,33 @@ describe("codex-protocol schemas", () => {
     expect(parsed.turns[0]?.items[0]?.type).toBe("commandExecution");
   });
 
+  it("parses thread conversation state with null command process id", () => {
+    const parsed = parseThreadConversationState({
+      id: "thread-123",
+      turns: [
+        {
+          status: "completed",
+          items: [
+            {
+              id: "item-cmd-null-process",
+              type: "commandExecution",
+              command: "echo hello",
+              cwd: "/tmp",
+              processId: null,
+              status: "completed",
+              aggregatedOutput: "hello",
+              exitCode: 0,
+              durationMs: 5
+            }
+          ]
+        }
+      ],
+      requests: []
+    });
+
+    expect(parsed.turns[0]?.items[0]?.type).toBe("commandExecution");
+  });
+
   it("parses command action with null path and query", () => {
     const parsed = parseThreadConversationState({
       id: "thread-123",
