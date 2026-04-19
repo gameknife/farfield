@@ -1072,7 +1072,6 @@ function NativeModeLanding({
   hostSupported,
   serverBaseUrlDraft,
   sharedSecretDraft,
-  hasServerBaseUrlDraftChanges,
   onServerBaseUrlDraftChange,
   onSharedSecretDraftChange,
   onActivateHost,
@@ -1081,7 +1080,6 @@ function NativeModeLanding({
   hostSupported: boolean;
   serverBaseUrlDraft: string;
   sharedSecretDraft: string;
-  hasServerBaseUrlDraftChanges: boolean;
   onServerBaseUrlDraftChange: (value: string) => void;
   onSharedSecretDraftChange: (value: string) => void;
   onActivateHost: () => void;
@@ -1213,8 +1211,7 @@ function NativeModeLanding({
                 onClick={onConnectClient}
                 disabled={
                   serverBaseUrlDraft.trim().length === 0 ||
-                  sharedSecretDraft.trim().length === 0 ||
-                  !hasServerBaseUrlDraftChanges
+                  sharedSecretDraft.trim().length === 0
                 }
                 className="h-10 w-full rounded-full text-sm"
               >
@@ -5083,7 +5080,6 @@ export function App(): React.JSX.Element {
           hostSupported={nativeRuntimeStatus.hostSupported}
           serverBaseUrlDraft={serverBaseUrlDraft}
           sharedSecretDraft={sharedSecretDraft}
-          hasServerBaseUrlDraftChanges={hasServerBaseUrlDraftChanges}
           onServerBaseUrlDraftChange={setServerBaseUrlDraft}
           onSharedSecretDraftChange={setSharedSecretDraft}
           onActivateHost={() => {
