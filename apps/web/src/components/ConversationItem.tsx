@@ -5,6 +5,8 @@ import { ReasoningBlock } from "./ReasoningBlock";
 import { CommandBlock } from "./CommandBlock";
 import { DiffBlock } from "./DiffBlock";
 import { MarkdownText } from "./MarkdownText";
+import { WebSearchBlock } from "./WebSearchBlock";
+import { toolBlockSpacingClass } from "./conversation-tool-layout";
 
 type UserMessageLikeItem = Extract<
   UnifiedItem,
@@ -18,32 +20,6 @@ interface Props {
   onSelectThread: (threadId: string) => void;
   previousItemType?: UnifiedItem["type"] | undefined;
   nextItemType?: UnifiedItem["type"] | undefined;
-}
-
-const TOOL_BLOCK_TYPES: readonly UnifiedItem["type"][] = [
-  "commandExecution",
-  "fileChange",
-  "webSearch",
-  "mcpToolCall",
-  "collabAgentToolCall",
-  "remoteTaskCreated",
-  "forkedFromConversation",
-];
-
-function isToolBlockType(type: UnifiedItem["type"] | undefined): boolean {
-  return type !== undefined && TOOL_BLOCK_TYPES.includes(type);
-}
-
-function toolBlockSpacingClass(
-  previousItemType: UnifiedItem["type"] | undefined,
-  nextItemType: UnifiedItem["type"] | undefined,
-): string {
-  const previousIsTool = isToolBlockType(previousItemType);
-  const nextIsTool = isToolBlockType(nextItemType);
-  if (previousIsTool && nextIsTool) return "my-1";
-  if (previousIsTool) return "mt-1 mb-2";
-  if (nextIsTool) return "mt-2 mb-1";
-  return "my-2";
 }
 
 function readTextContent(content: UserMessageLikeItem["content"]): string {
@@ -226,16 +202,7 @@ const ITEM_RENDERERS = {
   ),
 
   webSearch: ({ item, toolSpacing }) => (
-    <div
-      className={`${toolSpacing} rounded-lg border border-border bg-muted/20 px-3 py-2`}
-    >
-      <div className="text-[10px] text-muted-foreground font-mono mb-1 uppercase tracking-wider">
-        Web search
-      </div>
-      <div className="text-xs text-foreground/80 whitespace-pre-wrap break-words">
-        {item.query}
-      </div>
-    </div>
+    <WebSearchBlock item={item} className={toolSpacing} />
   ),
 
   mcpToolCall: ({ item, toolSpacing }) => {

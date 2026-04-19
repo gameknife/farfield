@@ -89,6 +89,7 @@ import { useTheme } from "@/hooks/useTheme";
 import { ChatTimeline, type ChatTimelineEntry } from "@/components/ChatTimeline";
 import { ChatComposer } from "@/components/ChatComposer";
 import { CodeSnippet } from "@/components/CodeSnippet";
+import type { ExplorationGroupItem } from "@/components/ExplorationGroupBlock";
 import { PendingApprovalCard } from "@/components/PendingApprovalCard";
 import { PendingInformationalRequestCard } from "@/components/PendingInformationalRequestCard";
 import { PendingRequestCard } from "@/components/PendingRequestCard";
@@ -515,6 +516,34 @@ function shouldRenderConversationItem(item: ConversationTurnItem): boolean {
     default:
       return true;
   }
+}
+
+function isExplorationCommandActionType(type: string): boolean {
+  return (
+    type === "search" ||
+    type === "read" ||
+    type === "readFile" ||
+    type === "listFiles"
+  );
+}
+
+function isExplorationGroupableItem(
+  item: ConversationTurnItem,
+): item is ExplorationGroupItem {
+  if (item.type === "webSearch") {
+    return true;
+  }
+
+  if (item.type !== "commandExecution") {
+    return false;
+  }
+
+  const actions = item.commandActions;
+  return (
+    actions !== undefined &&
+    actions.length > 0 &&
+    actions.every((action) => isExplorationCommandActionType(action.type))
+  );
 }
 
 function isFeatureAvailable(
@@ -1825,6 +1854,9 @@ export function App(): React.JSX.Element {
       turnIndex: number;
       turnIsInProgress: boolean;
     };
+    type IndexedExplorationConversationItem = IndexedConversationItem & {
+      item: ExplorationGroupItem;
+    };
 
     const newestFirst: IndexedConversationItem[] = [];
     let hasHidden = false;
@@ -1861,24 +1893,81 @@ export function App(): React.JSX.Element {
     }
 
     const chronological = newestFirst.reverse();
-    const visibleItems: FlatConversationItem[] = chronological.map(
-      (entry, index) => {
-        const previousEntry = chronological[index - 1];
-        const nextEntry = chronological[index + 1];
-        const startsNewTurn = previousEntry?.turnIndex !== entry.turnIndex;
-        const spacingTop = index === 0 ? 0 : startsNewTurn ? 16 : 10;
+    const visibleItems: FlatConversationItem[] = [];
+    let index = 0;
 
-        return {
-          key: entry.key,
-          item: entry.item,
-          isLast: index === chronological.length - 1,
-          turnIsInProgress: entry.turnIsInProgress,
-          previousItemType: previousEntry?.item.type,
-          nextItemType: nextEntry?.item.type,
-          spacingTop,
-        };
-      },
-    );
+    while (index < chronological.length) {
+      const entry = chronological[index];
+      if (!entry) {
+        index += 1;
+        continue;
+      }
+
+      if (isExplorationGroupableItem(entry.item)) {
+        const groupedEntries: IndexedExplorationConversationItem[] = [
+          { ...entry, item: entry.item },
+        ];
+        let lookaheadIndex = index + 1;
+
+        while (lookaheadIndex < chronological.length) {
+          const candidate = chronological[lookaheadIndex];
+          if (!candidate || !isExplorationGroupableItem(candidate.item)) {
+            break;
+          }
+          groupedEntries.push({ ...candidate, item: candidate.item });
+          lookaheadIndex += 1;
+        }
+
+        if (groupedEntries.length >= 2) {
+          const firstEntry = groupedEntries[0];
+          const lastEntry = groupedEntries[groupedEntries.length - 1];
+          if (!firstEntry || !lastEntry) {
+            index = lookaheadIndex;
+            continue;
+          }
+          const previousEntry = chronological[index - 1];
+          const nextEntry = chronological[lookaheadIndex];
+          const startsNewTurn =
+            previousEntry?.turnIndex !== firstEntry.turnIndex;
+          const spacingTop = index === 0 ? 0 : startsNewTurn ? 16 : 10;
+
+          visibleItems.push({
+            kind: "explorationGroup",
+            key: `exploration-group:${firstEntry.key}:${lastEntry.key}`,
+            items: groupedEntries.map((groupedEntry) => groupedEntry.item),
+            isActive: groupedEntries.some(
+              (groupedEntry) =>
+                groupedEntry.item.type === "commandExecution" &&
+                groupedEntry.item.status === "inProgress",
+            ),
+            previousItemType: previousEntry?.item.type,
+            nextItemType: nextEntry?.item.type,
+            spacingTop,
+          });
+
+          index = lookaheadIndex;
+          continue;
+        }
+      }
+
+      const previousEntry = chronological[index - 1];
+      const nextEntry = chronological[index + 1];
+      const startsNewTurn = previousEntry?.turnIndex !== entry.turnIndex;
+      const spacingTop = index === 0 ? 0 : startsNewTurn ? 16 : 10;
+
+      visibleItems.push({
+        kind: "item",
+        key: entry.key,
+        item: entry.item,
+        isLast: index === chronological.length - 1,
+        turnIsInProgress: entry.turnIsInProgress,
+        previousItemType: previousEntry?.item.type,
+        nextItemType: nextEntry?.item.type,
+        spacingTop,
+      });
+
+      index += 1;
+    }
 
     return {
       hasHidden,
@@ -2701,7 +2790,13 @@ export function App(): React.JSX.Element {
       return;
     }
     void loadCore().catch((error) => setError(toErrorMessage(error)));
-  }, [isConnectionReady, isNativeModeActivated, selectedAgentId]);
+  }, [
+    activeThreadAgentId,
+    hasResolvedSelectedThreadProvider,
+    isConnectionReady,
+    isNativeModeActivated,
+    selectedThreadId,
+  ]);
 
   useEffect(() => {
     if (!isConnectionReady || !isNativeModeActivated) {

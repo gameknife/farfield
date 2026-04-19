@@ -3,9 +3,14 @@ import { AnimatePresence, motion } from "framer-motion";
 import { ArrowDown } from "lucide-react";
 import type { UnifiedItem } from "@farfield/unified-surface";
 import { ConversationItem } from "@/components/ConversationItem";
+import {
+  ExplorationGroupBlock,
+  type ExplorationGroupItem,
+} from "@/components/ExplorationGroupBlock";
 import { Button } from "@/components/ui/button";
 
-export interface ChatTimelineEntry {
+export interface ChatTimelineItemEntry {
+  kind: "item";
   key: string;
   item: UnifiedItem;
   isLast: boolean;
@@ -14,6 +19,20 @@ export interface ChatTimelineEntry {
   nextItemType: UnifiedItem["type"] | undefined;
   spacingTop: number;
 }
+
+export interface ChatTimelineExplorationGroupEntry {
+  kind: "explorationGroup";
+  key: string;
+  items: ExplorationGroupItem[];
+  isActive: boolean;
+  previousItemType: UnifiedItem["type"] | undefined;
+  nextItemType: UnifiedItem["type"] | undefined;
+  spacingTop: number;
+}
+
+export type ChatTimelineEntry =
+  | ChatTimelineItemEntry
+  | ChatTimelineExplorationGroupEntry;
 
 interface ChatTimelineProps {
   selectedThreadId: string | null;
@@ -103,14 +122,23 @@ export const ChatTimeline = memo(function ChatTimeline({
                     }}
                     style={{ paddingTop: `${entry.spacingTop}px` }}
                   >
-                    <ConversationItem
-                      item={entry.item}
-                      isLast={entry.isLast}
-                      turnIsInProgress={entry.turnIsInProgress}
-                      onSelectThread={onSelectThread}
-                      previousItemType={entry.previousItemType}
-                      nextItemType={entry.nextItemType}
-                    />
+                    {entry.kind === "item" ? (
+                      <ConversationItem
+                        item={entry.item}
+                        isLast={entry.isLast}
+                        turnIsInProgress={entry.turnIsInProgress}
+                        onSelectThread={onSelectThread}
+                        previousItemType={entry.previousItemType}
+                        nextItemType={entry.nextItemType}
+                      />
+                    ) : (
+                      <ExplorationGroupBlock
+                        items={entry.items}
+                        isActive={entry.isActive}
+                        previousItemType={entry.previousItemType}
+                        nextItemType={entry.nextItemType}
+                      />
+                    )}
                   </motion.div>
                 ))}
               </motion.div>

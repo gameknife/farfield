@@ -777,7 +777,12 @@ export class CodexAgentAdapter implements AgentAdapter {
       threadId,
     );
     const rawEvents = this.streamEventsByThreadId.get(threadId) ?? [];
-    if (rawEvents.length === 0) {
+    const threadStreamEvents = rawEvents.filter(
+      (event) =>
+        event.type === "broadcast" &&
+        event.method === "thread-stream-state-changed",
+    );
+    if (threadStreamEvents.length === 0) {
       return {
         ownerClientId,
         conversationState: snapshotState,
@@ -788,8 +793,12 @@ export class CodexAgentAdapter implements AgentAdapter {
     const events: ReturnType<typeof parseThreadStreamStateChangedBroadcast>[] =
       [];
 
-    for (let eventIndex = 0; eventIndex < rawEvents.length; eventIndex += 1) {
-      const event = rawEvents[eventIndex];
+    for (
+      let eventIndex = 0;
+      eventIndex < threadStreamEvents.length;
+      eventIndex += 1
+    ) {
+      const event = threadStreamEvents[eventIndex];
       try {
         events.push(parseThreadStreamStateChangedBroadcast(event));
       } catch (error) {

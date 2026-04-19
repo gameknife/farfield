@@ -1263,6 +1263,226 @@ describe("App", () => {
     expect(latestObservedModel).toBe("gpt-new-codex");
   }, 15000);
 
+  it("groups consecutive exploration items into one expandable block", async () => {
+    const threadId = "thread-exploration-group";
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: threadId,
+          provider: "codex",
+          preview: "exploration thread",
+          createdAt: 1700000000,
+          updatedAt: 1700000000,
+          cwd: "/tmp/project",
+          source: "codex",
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    readThreadResolver = (targetThreadId: string) => ({
+      ok: true,
+      thread: buildConversationStateFixture(targetThreadId, "gpt-old-codex", {
+        turnItems: [
+          {
+            id: "command-search-1",
+            type: "commandExecution",
+            command: "rg --files src",
+            status: "completed",
+            commandActions: [
+              {
+                type: "search",
+                path: "src",
+                query: "Button",
+              },
+            ],
+            aggregatedOutput: "",
+            exitCode: 0,
+            durationMs: 14,
+          },
+          {
+            id: "command-read-1",
+            type: "commandExecution",
+            command: "sed -n '1,80p' src/App.tsx",
+            status: "completed",
+            commandActions: [
+              {
+                type: "readFile",
+                path: "src/App.tsx",
+              },
+            ],
+            aggregatedOutput: "",
+            exitCode: 0,
+            durationMs: 9,
+          },
+          {
+            id: "web-search-1",
+            type: "webSearch",
+            query: "vite streaming SSR",
+            action: {
+              type: "search",
+              query: "vite streaming SSR",
+            },
+          },
+        ],
+      }),
+    });
+
+    liveStateResolver = (targetThreadId: string, _provider: ProviderId) => ({
+      kind: "readLiveState",
+      threadId: targetThreadId,
+      ownerClientId: "client-1",
+      conversationState: readThreadResolver(targetThreadId, "codex")?.thread ?? null,
+      liveStateError: null,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Exploration")).toBeTruthy();
+    expect(await screen.findByText("1 code search")).toBeTruthy();
+    expect(await screen.findByText("1 file read")).toBeTruthy();
+    expect(await screen.findByText("1 web search")).toBeTruthy();
+    expect(screen.queryByText("vite streaming SSR")).toBeNull();
+    expect(screen.queryByText("Read src/App.tsx")).toBeNull();
+
+    const explorationLabel = await screen.findByText("Exploration");
+    const explorationButton = explorationLabel.closest("button");
+    expect(explorationButton).toBeTruthy();
+    if (!explorationButton) {
+      throw new Error("Missing exploration group button");
+    }
+    fireEvent.click(explorationButton);
+
+    expect(await screen.findByText("vite streaming SSR")).toBeTruthy();
+    expect(
+      await screen.findByText((content) => content.includes("Read") && content.includes("App.tsx")),
+    ).toBeTruthy();
+  });
+
+  it("refreshes model and mode catalogs after auto-selecting a thread from another provider", async () => {
+    const threadId = "thread-opencode-1";
+
+    featureMatrixFixture = {
+      ok: true,
+      features: {
+        codex: buildFeatureSet(codexCapabilities, {
+          enabled: true,
+          connected: true,
+        }),
+        opencode: buildFeatureSet(
+          {
+            canListModels: true,
+            canListCollaborationModes: true,
+            canSetCollaborationMode: true,
+            canSubmitUserInput: false,
+            canReadLiveState: false,
+            canReadStreamEvents: false,
+            canListProjectDirectories: true,
+          },
+          {
+            enabled: true,
+            connected: true,
+          },
+        ),
+      },
+    };
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: threadId,
+          provider: "opencode",
+          preview: "opencode thread",
+          createdAt: 1700000000,
+          updatedAt: 1700000001,
+          cwd: "/tmp/project",
+          source: "opencode",
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    collaborationModesFixture = {
+      codex: collaborationModesFixture.codex,
+      opencode: [
+        {
+          name: "OpenCode Default",
+          mode: "opencode-default",
+          model: null,
+          reasoningEffort: "high",
+          developerInstructions: null,
+        },
+      ],
+    };
+
+    modelsFixture = {
+      codex: modelsFixture.codex,
+      opencode: [
+        {
+          id: "opencode/model-1",
+          displayName: "OpenCode Model",
+          description: "OpenCode test model",
+          defaultReasoningEffort: "high",
+          supportedReasoningEfforts: ["high"],
+          hidden: false,
+          isDefault: true,
+        },
+      ],
+    };
+
+    readThreadResolver = (targetThreadId: string, provider: ProviderId | null) => ({
+      ok: true,
+      thread: buildConversationStateFixture(targetThreadId, "opencode/model-1", {
+        provider: provider ?? "opencode",
+        latestReasoningEffort: "high",
+        collaborationModeReasoningEffort: "high",
+      }),
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("opencode thread").length).toBeGreaterThan(0);
+    });
+    await waitFor(() => {
+      const unifiedCommandBodies = vi
+        .mocked(fetch)
+        .mock.calls.map(([, init]) => init?.body)
+        .filter((body): body is string => typeof body === "string")
+        .map((body) => JSON.parse(body) as { kind?: string; provider?: string });
+
+      expect(
+        unifiedCommandBodies.some(
+          (body) => body.kind === "listModels" && body.provider === "opencode",
+        ),
+      ).toBe(true);
+      expect(
+        unifiedCommandBodies.some(
+          (body) =>
+            body.kind === "listCollaborationModes" &&
+            body.provider === "opencode",
+        ),
+      ).toBe(true);
+    });
+  });
+
   it("uses live pending requests when live reduction fails", async () => {
     const threadId = "thread-with-request";
 

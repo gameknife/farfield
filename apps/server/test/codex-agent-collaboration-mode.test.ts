@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DesktopIpcError } from "@farfield/api";
-import type { CollaborationMode } from "@farfield/protocol";
+import type { CollaborationMode, IpcFrame, ThreadConversationState } from "@farfield/protocol";
 import {
   CodexAgentAdapter,
   type CodexAgentRuntimeState,
@@ -15,6 +15,12 @@ interface SetCollaborationModeCall {
 type CodexAgentAdapterTestAccess = CodexAgentAdapter & {
   runtimeState: CodexAgentRuntimeState;
   threadOwnerById: Map<string, string>;
+  streamEventsByThreadId: Map<string, IpcFrame[]>;
+  streamSnapshotByThreadId: Map<string, ThreadConversationState>;
+  streamSnapshotOriginByThreadId: Map<
+    string,
+    "stream" | "readThreadWithTurns" | "readThread"
+  >;
   ensureThreadLoaded: (threadId: string) => Promise<void>;
   setThreadOwnerClientId: (threadId: string, ownerClientId: string) => void;
   service: {
@@ -130,5 +136,58 @@ describe("CodexAgentAdapter.setCollaborationMode", () => {
     expect(setCollaborationMode.mock.calls[0]?.[0]?.ownerClientId).toBe(
       "owner-live",
     );
+  });
+
+  it("ignores non-thread stream broadcasts when reducing live state", async () => {
+    const adapter = createAdapter();
+    const threadId = "thread-live-state";
+    const snapshotState: ThreadConversationState = {
+      id: threadId,
+      turns: [],
+      requests: [],
+      title: "before",
+    };
+
+    adapter.streamSnapshotByThreadId.set(threadId, snapshotState);
+    adapter.streamSnapshotOriginByThreadId.set(threadId, "stream");
+    adapter.streamEventsByThreadId.set(threadId, [
+      {
+        type: "broadcast",
+        method: "thread-title-changed",
+        sourceClientId: "owner-live",
+        version: 1,
+        params: {
+          threadId,
+          title: "ignored",
+        },
+      },
+      {
+        type: "broadcast",
+        method: "thread-stream-state-changed",
+        sourceClientId: "owner-live",
+        version: 1,
+        params: {
+          conversationId: threadId,
+          type: "thread-stream-state-changed",
+          version: 1,
+          change: {
+            type: "patches",
+            patches: [
+              {
+                op: "replace",
+                path: ["title"],
+                value: "after",
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    const state = await adapter.readLiveState(threadId);
+
+    expect(state.liveStateError).toBeNull();
+    expect(state.conversationState?.title).toBe("after");
+    expect(state.ownerClientId).toBe("owner-live");
   });
 });
