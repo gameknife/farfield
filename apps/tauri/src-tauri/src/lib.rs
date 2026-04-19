@@ -294,6 +294,14 @@ fn sidecar_binary_path(app: &AppHandle, binary_name: &str) -> Result<PathBuf, St
         .map_err(|error| error.to_string())
 }
 
+fn sidecar_binary_name(base_name: &str) -> String {
+    if cfg!(target_os = "windows") {
+        format!("{base_name}.exe")
+    } else {
+        base_name.to_string()
+    }
+}
+
 fn packaged_web_dist_path(app: &AppHandle) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
         return Ok(repo_root().join("apps").join("web").join("dist"));
@@ -384,8 +392,8 @@ fn start_desktop_host_children(
         return Ok(());
     }
 
-    let server_path = sidecar_binary_path(app, "farfield-server.exe")?;
-    let web_host_path = sidecar_binary_path(app, "web-host.exe")?;
+    let server_path = sidecar_binary_path(app, &sidecar_binary_name("farfield-server"))?;
+    let web_host_path = sidecar_binary_path(app, &sidecar_binary_name("web-host"))?;
 
     let server_child = Command::new(server_path)
         .env("HOST", "0.0.0.0")

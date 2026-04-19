@@ -1011,12 +1011,14 @@ function IconBtn({
   disabled,
   title,
   active,
+  className,
   children,
 }: {
   onClick?: () => void;
   disabled?: boolean;
   title?: string;
   active?: boolean;
+  className?: string;
   children: React.ReactNode;
 }) {
   const buttonNode = (
@@ -1030,7 +1032,7 @@ function IconBtn({
         active
           ? "bg-muted text-foreground hover:bg-muted"
           : "text-muted-foreground hover:text-foreground hover:bg-muted"
-      }`}
+      } ${className ?? ""}`}
     >
       {children}
     </Button>
@@ -1389,6 +1391,8 @@ export function App(): React.JSX.Element {
   >(null);
   const [dragOverGroupKey, setDragOverGroupKey] = useState<string | null>(null);
   const [draggedGroupKey, setDraggedGroupKey] = useState<string | null>(null);
+  const [selectedThreadLoadStatusText, setSelectedThreadLoadStatusText] =
+    useState<string | null>(null);
 
   /* Refs */
   const selectedThreadIdRef = useRef<string | null>(null);
@@ -1441,6 +1445,7 @@ export function App(): React.JSX.Element {
   const modelsSignatureRef = useRef<string[]>([]);
   const historyDetailCacheRef = useRef<Map<string, HistoryDetail>>(new Map());
   const historyDetailRequestIdRef = useRef(0);
+  const selectedThreadLoadTokenRef = useRef(0);
 
   /* Derived */
   const selectedThread = useMemo(
@@ -1838,6 +1843,13 @@ export function App(): React.JSX.Element {
 
   const deferredConversationState = useDeferredValue(conversationState);
   const turns = deferredConversationState?.turns ?? [];
+  const hasSelectedThreadCachedView = selectedThreadId
+    ? threadViewStateCacheRef.current.has(selectedThreadId)
+    : false;
+  const isInitialSelectedThreadLoadPending =
+    selectedThreadId !== null &&
+    conversationState === null &&
+    (!hasSelectedThreadCachedView || selectedThreadLoadStatusText !== null);
   const lastTurn = turns[turns.length - 1];
   const isGenerating = isTurnInProgressStatus(lastTurn?.status);
   const canUseComposer = isGenerating
@@ -2432,6 +2444,27 @@ export function App(): React.JSX.Element {
     ) => {
       const includeTurns = options?.includeTurns ?? true;
       const includeStreamEvents = options?.includeStreamEvents ?? includeTurns;
+      const shouldUpdateSelectedThread = selectedThreadIdRef.current === threadId;
+      const existingCachedState =
+        threadViewStateCacheRef.current.get(threadId) ?? null;
+      const loadingToken =
+        shouldUpdateSelectedThread && existingCachedState === null
+          ? ++selectedThreadLoadTokenRef.current
+          : null;
+      const setSelectedThreadLoadPhase = (nextText: string | null) => {
+        if (loadingToken === null) {
+          return;
+        }
+        if (selectedThreadLoadTokenRef.current !== loadingToken) {
+          return;
+        }
+        setSelectedThreadLoadStatusText((prev) =>
+          prev === nextText ? prev : nextText,
+        );
+      };
+      let nextStreamEvents = existingCachedState?.streamEvents ?? [];
+
+      setSelectedThreadLoadPhase("Loading session…");
       let threadAgentId = threadProviderByIdRef.current.get(threadId) ?? null;
       let read =
         threadAgentId === null
@@ -2463,6 +2496,9 @@ export function App(): React.JSX.Element {
         });
       }
 
+      if (canReadLiveState) {
+        setSelectedThreadLoadPhase("Syncing live updates…");
+      }
       const live = canReadLiveState
         ? await getLiveState(threadId, threadAgentId)
         : {
@@ -2485,119 +2521,120 @@ export function App(): React.JSX.Element {
         (activeTabRef.current === "debug" ||
           (threadAgentId === "codex" && selectedThreadIdRef.current === threadId)) &&
         (includeStreamEvents || threadAgentId === "codex");
-      const shouldUpdateSelectedThread =
-        selectedThreadIdRef.current === threadId;
-      const existingCachedState =
-        threadViewStateCacheRef.current.get(threadId) ?? null;
-      let nextStreamEvents = existingCachedState?.streamEvents ?? [];
-      startTransition(() => {
-        setThreads((previousThreads) => {
-          const nextIsGenerating = live.conversationState
-            ? isThreadGeneratingState(live.conversationState)
-            : isThreadGeneratingState(read.thread);
-          const nextThreads = previousThreads.map((threadSummary) => {
-            if (threadSummary.id !== read.thread.id) {
-              return threadSummary;
+
+      try {
+        startTransition(() => {
+          setThreads((previousThreads) => {
+            const nextIsGenerating = live.conversationState
+              ? isThreadGeneratingState(live.conversationState)
+              : isThreadGeneratingState(read.thread);
+            const nextThreads = previousThreads.map((threadSummary) => {
+              if (threadSummary.id !== read.thread.id) {
+                return threadSummary;
+              }
+
+              const nextUpdatedAt =
+                typeof read.thread.updatedAt === "number"
+                  ? Math.max(threadSummary.updatedAt, read.thread.updatedAt)
+                  : threadSummary.updatedAt;
+              const nextTitle =
+                read.thread.title !== undefined
+                  ? read.thread.title
+                  : threadSummary.title;
+              const hadGenerating = threadSummary.isGenerating ?? false;
+
+              if (
+                nextUpdatedAt === threadSummary.updatedAt &&
+                nextTitle === threadSummary.title &&
+                hadGenerating === nextIsGenerating
+              ) {
+                return threadSummary;
+              }
+
+              return {
+                ...threadSummary,
+                updatedAt: nextUpdatedAt,
+                isGenerating: nextIsGenerating,
+                ...(nextTitle !== undefined ? { title: nextTitle } : {}),
+              };
+            });
+
+            const sortedThreads = sortThreadsByRecency(nextThreads);
+            const nextSignature = buildThreadsSignature(sortedThreads);
+            if (signaturesMatch(threadsSignatureRef.current, nextSignature)) {
+              return previousThreads;
             }
-
-            const nextUpdatedAt =
-              typeof read.thread.updatedAt === "number"
-                ? Math.max(threadSummary.updatedAt, read.thread.updatedAt)
-                : threadSummary.updatedAt;
-            const nextTitle =
-              read.thread.title !== undefined
-                ? read.thread.title
-                : threadSummary.title;
-            const hadGenerating = threadSummary.isGenerating ?? false;
-
-            if (
-              nextUpdatedAt === threadSummary.updatedAt &&
-              nextTitle === threadSummary.title &&
-              hadGenerating === nextIsGenerating
-            ) {
-              return threadSummary;
-            }
-
-            return {
-              ...threadSummary,
-              updatedAt: nextUpdatedAt,
-              isGenerating: nextIsGenerating,
-              ...(nextTitle !== undefined ? { title: nextTitle } : {}),
-            };
+            threadsSignatureRef.current = nextSignature;
+            return sortedThreads;
           });
-
-          const sortedThreads = sortThreadsByRecency(nextThreads);
-          const nextSignature = buildThreadsSignature(sortedThreads);
-          if (signaturesMatch(threadsSignatureRef.current, nextSignature)) {
-            return previousThreads;
+          if (!shouldUpdateSelectedThread) {
+            return;
           }
-          threadsSignatureRef.current = nextSignature;
-          return sortedThreads;
-        });
-        if (!shouldUpdateSelectedThread) {
-          return;
-        }
-        setLiveState((prev) => {
-          if (
-            buildLiveStateSyncSignature(prev) ===
-            buildLiveStateSyncSignature(live)
-          ) {
-            return prev;
-          }
-          return live;
-        });
-        if (shouldReadTurns) {
-          setReadThreadState((prev) => {
+          setLiveState((prev) => {
             if (
-              buildReadThreadSyncSignature(prev) ===
-              buildReadThreadSyncSignature(read)
+              buildLiveStateSyncSignature(prev) ===
+              buildLiveStateSyncSignature(live)
             ) {
               return prev;
             }
-            return read;
+            return live;
           });
-        }
-      });
-
-      threadViewStateCacheRef.current.set(threadId, {
-        readThreadState: shouldReadTurns
-          ? read
-          : (existingCachedState?.readThreadState ?? null),
-        liveState: live,
-        streamEvents: nextStreamEvents,
-      });
-
-      if (!shouldLoadStreamEvents) {
-        return;
-      }
-
-      const stream = await getStreamEvents(threadId, threadAgentId);
-      nextStreamEvents = stream.events;
-      threadViewStateCacheRef.current.set(threadId, {
-        readThreadState: shouldReadTurns
-          ? read
-          : (existingCachedState?.readThreadState ?? null),
-        liveState: live,
-        streamEvents: nextStreamEvents,
-      });
-      if (selectedThreadIdRef.current !== threadId) {
-        return;
-      }
-      startTransition(() => {
-        setStreamEvents((prev) => {
-          const prevLast = prev[prev.length - 1];
-          const nextLast = stream.events[stream.events.length - 1];
-          const prevLastSignature = prevLast ? JSON.stringify(prevLast) : "";
-          const nextLastSignature = nextLast ? JSON.stringify(nextLast) : "";
-          if (
-            prev.length === stream.events.length &&
-            prevLastSignature === nextLastSignature
-          ) {
-            return prev;
+          if (shouldReadTurns) {
+            setReadThreadState((prev) => {
+              if (
+                buildReadThreadSyncSignature(prev) ===
+                buildReadThreadSyncSignature(read)
+              ) {
+                return prev;
+              }
+              return read;
+            });
           }
-          return stream.events;
         });
-      });
+
+        threadViewStateCacheRef.current.set(threadId, {
+          readThreadState: shouldReadTurns
+            ? read
+            : (existingCachedState?.readThreadState ?? null),
+          liveState: live,
+          streamEvents: nextStreamEvents,
+        });
+
+        if (!shouldLoadStreamEvents) {
+          return;
+        }
+
+        setSelectedThreadLoadPhase("Loading recent activity…");
+        const stream = await getStreamEvents(threadId, threadAgentId);
+        nextStreamEvents = stream.events;
+        threadViewStateCacheRef.current.set(threadId, {
+          readThreadState: shouldReadTurns
+            ? read
+            : (existingCachedState?.readThreadState ?? null),
+          liveState: live,
+          streamEvents: nextStreamEvents,
+        });
+        if (selectedThreadIdRef.current !== threadId) {
+          return;
+        }
+        startTransition(() => {
+          setStreamEvents((prev) => {
+            const prevLast = prev[prev.length - 1];
+            const nextLast = stream.events[stream.events.length - 1];
+            const prevLastSignature = prevLast ? JSON.stringify(prevLast) : "";
+            const nextLastSignature = nextLast ? JSON.stringify(nextLast) : "";
+            if (
+              prev.length === stream.events.length &&
+              prevLastSignature === nextLastSignature
+            ) {
+              return prev;
+            }
+            return stream.events;
+          });
+        });
+      } finally {
+        setSelectedThreadLoadPhase(null);
+      }
     },
     [agentsById],
   );
@@ -2936,6 +2973,7 @@ export function App(): React.JSX.Element {
 
   useEffect(() => {
     if (!isNativeModeActivated || !selectedThreadId) {
+      setSelectedThreadLoadStatusText(null);
       setLiveState(null);
       setReadThreadState(null);
       setStreamEvents([]);
@@ -2944,10 +2982,12 @@ export function App(): React.JSX.Element {
     const cachedState =
       threadViewStateCacheRef.current.get(selectedThreadId) ?? null;
     if (cachedState) {
+      setSelectedThreadLoadStatusText(null);
       setLiveState(cachedState.liveState);
       setReadThreadState(cachedState.readThreadState);
       setStreamEvents(cachedState.streamEvents);
     } else {
+      setSelectedThreadLoadStatusText("Loading session…");
       setLiveState(null);
       setReadThreadState(null);
       setStreamEvents([]);
@@ -4482,7 +4522,7 @@ export function App(): React.JSX.Element {
                 damping: 36,
                 mass: 0.7,
               }}
-              className="hidden md:flex fixed left-0 top-[env(safe-area-inset-top)] bottom-[env(safe-area-inset-bottom)] z-30 w-64 flex-col border-r border-sidebar-border bg-sidebar/78 supports-[backdrop-filter]:bg-sidebar/62 backdrop-blur-xl shadow-xl"
+              className="hidden md:flex fixed left-0 top-[var(--app-safe-top)] bottom-[var(--app-safe-bottom)] z-30 w-64 flex-col border-r border-sidebar-border bg-sidebar/78 supports-[backdrop-filter]:bg-sidebar/62 backdrop-blur-xl shadow-xl"
             >
               {renderSidebarContent("desktop")}
             </motion.aside>
@@ -4501,7 +4541,7 @@ export function App(): React.JSX.Element {
                 duration: mobileSidebarDragOffset !== null ? 0 : 0.2,
                 ease: mobileSidebarDragOffset !== null ? "linear" : "easeOut",
               }}
-              className="md:hidden fixed left-0 top-[env(safe-area-inset-top)] bottom-[env(safe-area-inset-bottom)] z-50 w-64 flex flex-col border-r border-sidebar-border bg-sidebar/82 supports-[backdrop-filter]:bg-sidebar/68 backdrop-blur-xl shadow-xl"
+              className="md:hidden fixed left-0 top-[var(--app-safe-top)] bottom-[var(--app-safe-bottom)] z-50 w-64 flex flex-col border-r border-sidebar-border bg-sidebar/82 supports-[backdrop-filter]:bg-sidebar/68 backdrop-blur-xl shadow-xl"
               style={{ touchAction: "pan-y" }}
               onTouchStart={beginCloseSidebarSwipe}
               onTouchMove={updateCloseSidebarSwipe}
@@ -4532,8 +4572,9 @@ export function App(): React.JSX.Element {
                 <IconBtn
                   onClick={openMobileSidebar}
                   title="Threads"
+                  className="h-11 w-11 rounded-xl -ml-1"
                 >
-                  <Menu size={15} />
+                  <Menu size={18} />
                 </IconBtn>
               </div>
               {!desktopSidebarOpen && (
@@ -4794,6 +4835,8 @@ export function App(): React.JSX.Element {
                   selectedThreadId={selectedThreadId}
                   turnsLength={turns.length}
                   hasAnyAgent={availableAgentIds.length > 0}
+                  isInitialThreadLoadPending={isInitialSelectedThreadLoadPending}
+                  threadLoadStatusText={selectedThreadLoadStatusText}
                   hasHiddenChatItems={hasHiddenChatItems}
                   visibleConversationItems={visibleConversationItems}
                   isChatAtBottom={isChatAtBottom}
@@ -4813,7 +4856,7 @@ export function App(): React.JSX.Element {
                 />
 
                 {/* Input area */}
-                <div className="relative z-10 -mt-6 px-4 pt-6 pb-[calc(env(safe-area-inset-bottom)+0.5rem)] md:pb-6 shrink-0">
+                <div className="relative z-10 -mt-6 px-4 pt-6 pb-[calc(var(--app-safe-bottom)+1rem)] md:pb-6 shrink-0">
                   <div
                     aria-hidden="true"
                     className="pointer-events-none absolute inset-x-0 top-0 h-12 bg-gradient-to-b from-transparent via-background/85 to-background"

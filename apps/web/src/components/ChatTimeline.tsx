@@ -1,6 +1,6 @@
 import { memo } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ArrowDown } from "lucide-react";
+import { ArrowDown, Loader2 } from "lucide-react";
 import type { UnifiedItem } from "@farfield/unified-surface";
 import { ConversationItem } from "@/components/ConversationItem";
 import {
@@ -38,6 +38,8 @@ interface ChatTimelineProps {
   selectedThreadId: string | null;
   turnsLength: number;
   hasAnyAgent: boolean;
+  isInitialThreadLoadPending: boolean;
+  threadLoadStatusText: string | null;
   hasHiddenChatItems: boolean;
   visibleConversationItems: ChatTimelineEntry[];
   isChatAtBottom: boolean;
@@ -52,6 +54,8 @@ export const ChatTimeline = memo(function ChatTimeline({
   selectedThreadId,
   turnsLength,
   hasAnyAgent,
+  isInitialThreadLoadPending,
+  threadLoadStatusText,
   hasHiddenChatItems,
   visibleConversationItems,
   isChatAtBottom,
@@ -83,13 +87,29 @@ export const ChatTimeline = memo(function ChatTimeline({
             className="max-w-3xl mx-auto px-4 pt-4 pb-6"
           >
             {turnsLength === 0 ? (
-              <div className="text-center py-20 text-sm text-muted-foreground">
-                {selectedThreadId
-                  ? "No messages yet"
-                  : hasAnyAgent
-                    ? "Start typing to create a new thread"
-                    : "Select a thread from the sidebar"}
-              </div>
+              isInitialThreadLoadPending ? (
+                <div className="flex flex-col items-center justify-center gap-4 py-20 text-center">
+                  <span className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-border/70 bg-card text-foreground shadow-sm">
+                    <Loader2 size={18} className="animate-spin" />
+                  </span>
+                  <div className="space-y-1">
+                    <div className="text-sm font-medium text-foreground">
+                      {threadLoadStatusText ?? "Loading session…"}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      Please wait while the thread state syncs.
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="text-center py-20 text-sm text-muted-foreground">
+                  {selectedThreadId
+                    ? "No messages yet"
+                    : hasAnyAgent
+                      ? "Start typing to create a new thread"
+                      : "Select a thread from the sidebar"}
+                </div>
+              )
             ) : (
               <motion.div
                 ref={chatContentRef}
@@ -154,7 +174,7 @@ export const ChatTimeline = memo(function ChatTimeline({
             animate={{ opacity: 1, height: "auto" }}
             exit={{ opacity: 0, y: 8 }}
             transition={{ duration: 0.18 }}
-            className="absolute left-1/2 -translate-x-1/2 bottom-[calc(env(safe-area-inset-bottom)+7.25rem)] md:bottom-[7.75rem] z-20"
+            className="absolute left-1/2 -translate-x-1/2 bottom-[calc(var(--app-safe-bottom)+8rem)] md:bottom-[7.75rem] z-20"
           >
             <Button
               type="button"

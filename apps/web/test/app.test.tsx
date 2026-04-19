@@ -689,6 +689,89 @@ describe("App", () => {
     expect(await screen.findByTitle("Waiting for user input")).toBeTruthy();
   });
 
+  it("shows a loading state before rendering an empty selected thread", async () => {
+    const threadId = "thread-empty-loading";
+    const fetchMock = vi.mocked(fetch);
+    const baseFetchImplementation = fetchMock.getMockImplementation();
+    if (!baseFetchImplementation) {
+      throw new Error("fetch mock implementation is missing");
+    }
+    let releaseReadThread: () => void = () => {
+      throw new Error("readThread release callback was not initialized");
+    };
+    const readThreadBlocked = new Promise<void>((resolve) => {
+      releaseReadThread = resolve;
+    });
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: threadId,
+          provider: "codex",
+          preview: "thread preview",
+          createdAt: 1700000000,
+          updatedAt: 1700000000,
+          cwd: "/tmp/project",
+          source: "codex",
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    readThreadResolver = (targetThreadId: string) => ({
+      ok: true,
+      thread: {
+        id: targetThreadId,
+        provider: "codex",
+        turns: [],
+        requests: [],
+        updatedAt: 1700000000,
+        latestModel: "gpt-5.3-codex",
+        latestReasoningEffort: "medium",
+        latestCollaborationMode: {
+          mode: "default",
+          settings: {
+            model: "gpt-5.3-codex",
+            reasoningEffort: "medium",
+            developerInstructions: null,
+          },
+        },
+      },
+    });
+
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.includes(`/api/unified/thread/${threadId}`)) {
+        await readThreadBlocked;
+      }
+      return baseFetchImplementation(input, init);
+    });
+
+    try {
+      render(<App />);
+
+      expect(await screen.findByText("Loading session…")).toBeTruthy();
+      expect(screen.queryByText("No messages yet")).toBeNull();
+      expect(
+        await screen.findByText("Please wait while the thread state syncs."),
+      ).toBeTruthy();
+
+      releaseReadThread();
+
+      expect(await screen.findByText("No messages yet")).toBeTruthy();
+    } finally {
+      fetchMock.mockImplementation(baseFetchImplementation);
+    }
+  });
+
   it("shows waiting indicators in the sidebar for selected thread live requests", async () => {
     const threadId = "thread-live-waiting";
     const approvalRequest: UnifiedThreadFixture["requests"][number] = {

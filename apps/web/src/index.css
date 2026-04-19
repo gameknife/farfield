@@ -51,6 +51,10 @@
 
 :root {
   --radius: 0.625rem;
+  --app-safe-top: env(safe-area-inset-top, 0px);
+  --app-safe-right: env(safe-area-inset-right, 0px);
+  --app-safe-bottom: env(safe-area-inset-bottom, 0px);
+  --app-safe-left: env(safe-area-inset-left, 0px);
   --background: oklch(1 0 0);
   --foreground: oklch(0.145 0 0);
   --card: oklch(1 0 0);
@@ -124,6 +128,13 @@
   --danger: oklch(0.71 0.19 22);
 }
 
+@media (pointer: coarse) {
+  :root {
+    --app-safe-top: max(env(safe-area-inset-top, 0px), 0.75rem);
+    --app-safe-bottom: max(env(safe-area-inset-bottom, 0px), 1rem);
+  }
+}
+
 *,
 *::before,
 *::after {
@@ -148,10 +159,10 @@ body {
   height: 100dvh;
   min-height: 100svh;
   overflow: hidden;
-  padding-top: env(safe-area-inset-top);
-  padding-right: env(safe-area-inset-right);
-  padding-bottom: env(safe-area-inset-bottom);
-  padding-left: env(safe-area-inset-left);
+  padding-top: var(--app-safe-top);
+  padding-right: var(--app-safe-right);
+  padding-bottom: var(--app-safe-bottom);
+  padding-left: var(--app-safe-left);
 }
 
 pre,

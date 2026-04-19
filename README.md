@@ -122,6 +122,10 @@ If you need a custom backend origin for API proxying:
 FARFIELD_API_ORIGIN=http://127.0.0.1:4311 bun run start
 ```
 
+## Release packaging
+
+Release packaging commands and CI publishing flow are documented in [RELEASE.md](./RELEASE.md).
+
 ### React Compiler and production profiling
 
 Frontend build supports two optional flags:
