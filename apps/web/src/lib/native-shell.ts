@@ -44,8 +44,9 @@ export const NativeConnectionConfigSchema = z.union([
 
 export const NativeRuntimeStatusSchema = z
   .object({
-    activeMode: z.enum(["host", "remoteClient"]),
+    activeMode: z.enum(["unconfigured", "host", "remoteClient"]),
     hostSupported: z.boolean(),
+    nativeAppUrl: z.string().url(),
     resolvedBindAddress: z.string(),
     server4311Status: NativeRuntimeServiceStatusSchema,
     web4312Status: NativeRuntimeServiceStatusSchema,
@@ -110,6 +111,14 @@ export async function saveNativeConnectionConfig(
   }
 
   return NativeConnectionConfigSchema.parse(result);
+}
+
+export async function activateNativeHostMode(): Promise<NativeBootstrap | null> {
+  const result = await invokeTauriCommand<NativeBootstrap>("farfield_activate_host_mode");
+  if (result === null) {
+    return null;
+  }
+  return NativeBootstrapSchema.parse(result);
 }
 
 export async function getNativeRuntimeStatus(): Promise<NativeRuntimeStatus | null> {

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearStoredServerTarget,
   parseSharedSecret,
@@ -6,9 +6,32 @@ import {
   saveServerTarget,
 } from "../src/lib/server-target";
 
+const localStorageBacking = new Map<string, string>();
+vi.stubGlobal("localStorage", {
+  getItem: vi.fn((key: string): string | null => {
+    return localStorageBacking.get(key) ?? null;
+  }),
+  setItem: vi.fn((key: string, value: string): void => {
+    localStorageBacking.set(key, value);
+  }),
+  removeItem: vi.fn((key: string): void => {
+    localStorageBacking.delete(key);
+  }),
+  clear: vi.fn((): void => {
+    localStorageBacking.clear();
+  }),
+  key: vi.fn((index: number): string | null => {
+    const keys = [...localStorageBacking.keys()];
+    return keys[index] ?? null;
+  }),
+  get length(): number {
+    return localStorageBacking.size;
+  },
+});
+
 describe("server target storage", () => {
   beforeEach(() => {
-    window.localStorage.clear();
+    localStorageBacking.clear();
   });
 
   it("round-trips a stored server target with shared secret", () => {

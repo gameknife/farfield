@@ -9,7 +9,12 @@ use tauri::{AppHandle, Manager, State};
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "mode", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "mode",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 enum ConnectionConfig {
     Host {
         version: u8,
@@ -35,6 +40,7 @@ struct RuntimeServiceStatus {
 struct RuntimeStatus {
     active_mode: String,
     host_supported: bool,
+    native_app_url: String,
     resolved_bind_address: String,
     server4311_status: RuntimeServiceStatus,
     web4312_status: RuntimeServiceStatus,
@@ -68,6 +74,10 @@ struct AppStateInner {
     children: Mutex<ManagedChildren>,
 }
 
+const HOST_SERVER_BASE_URL: &str = "http://127.0.0.1:4311";
+const HOST_WINDOW_URL: &str = "http://127.0.0.1:4312";
+const MODE_PICKER_DONE_HASH: &str = "#mode-chosen";
+
 fn is_desktop_platform() -> bool {
     cfg!(target_os = "windows") || cfg!(target_os = "macos") || cfg!(target_os = "linux")
 }
@@ -80,7 +90,7 @@ fn default_connection_config() -> ConnectionConfig {
     if is_desktop_platform() {
         ConnectionConfig::Host {
             version: 1,
-            server_base_url: "http://127.0.0.1:4311".to_string(),
+            server_base_url: HOST_SERVER_BASE_URL.to_string(),
             shared_secret: generate_shared_secret(),
         }
     } else {
@@ -99,11 +109,14 @@ fn validate_connection_config(config: &ConnectionConfig) -> Result<(), String> {
             server_base_url,
             shared_secret,
         } => {
+            if !is_desktop_platform() {
+                return Err("Host mode is only supported on desktop".to_string());
+            }
             if *version != 1 {
                 return Err("Unsupported connection config version".to_string());
             }
-            if server_base_url != "http://127.0.0.1:4311" {
-                return Err("Host mode must use http://127.0.0.1:4311".to_string());
+            if server_base_url != HOST_SERVER_BASE_URL {
+                return Err(format!("Host mode must use {HOST_SERVER_BASE_URL}"));
             }
             if shared_secret.trim().is_empty() {
                 return Err("Shared secret is required".to_string());
@@ -117,7 +130,7 @@ fn validate_connection_config(config: &ConnectionConfig) -> Result<(), String> {
             if *version != 1 {
                 return Err("Unsupported connection config version".to_string());
             }
-            Url::parse(server_base_url).map_err(|error| error.to_string())?;
+            validate_remote_server_base_url(server_base_url)?;
             if shared_secret.trim().is_empty() {
                 return Err("Shared secret is required".to_string());
             }
@@ -174,17 +187,66 @@ fn load_connection_config(app: &AppHandle) -> ConnectionConfig {
     parsed
 }
 
-fn save_connection_config_file(app: &AppHandle, connection: &ConnectionConfig) -> Result<(), String> {
+fn save_connection_config_file(
+    app: &AppHandle,
+    connection: &ConnectionConfig,
+) -> Result<(), String> {
     let config_path = app_config_path(app)?;
     let encoded = serde_json::to_string_pretty(connection).map_err(|error| error.to_string())?;
     fs::write(config_path, encoded).map_err(|error| error.to_string())
 }
 
-fn build_runtime_status(connection: &ConnectionConfig) -> RuntimeStatus {
+fn validate_remote_server_base_url(server_base_url: &str) -> Result<(), String> {
+    let parsed = Url::parse(server_base_url).map_err(|error| error.to_string())?;
+    let scheme = parsed.scheme();
+    if scheme != "http" && scheme != "https" {
+        return Err("Remote client mode must use http:// or https://".to_string());
+    }
+    if parsed.query().is_some() {
+        return Err("Remote client URL cannot include a query string".to_string());
+    }
+    if parsed.fragment().is_some() {
+        return Err("Remote client URL cannot include a hash fragment".to_string());
+    }
+    if parsed.path() != "" && parsed.path() != "/" {
+        return Err("Remote client URL cannot include a path".to_string());
+    }
+    Ok(())
+}
+
+fn build_runtime_status(connection: &ConnectionConfig, native_app_url: &str) -> RuntimeStatus {
+    let resolved_bind_address = match connection {
+        ConnectionConfig::Host { .. } => "0.0.0.0:4311".to_string(),
+        ConnectionConfig::RemoteClient {
+            server_base_url, ..
+        } => server_base_url.clone(),
+    };
+
+    RuntimeStatus {
+        active_mode: "unconfigured".to_string(),
+        host_supported: is_desktop_platform(),
+        native_app_url: native_app_url.to_string(),
+        resolved_bind_address,
+        server4311_status: RuntimeServiceStatus {
+            state: "stopped".to_string(),
+            message: None,
+        },
+        web4312_status: RuntimeServiceStatus {
+            state: "stopped".to_string(),
+            message: None,
+        },
+    }
+}
+
+fn build_active_runtime_status(
+    connection: &ConnectionConfig,
+    native_app_url: &str,
+) -> RuntimeStatus {
     match connection {
         ConnectionConfig::Host { .. } => RuntimeStatus {
             active_mode: "host".to_string(),
             host_supported: is_desktop_platform(),
+            native_app_url: native_app_url.to_string(),
             resolved_bind_address: "0.0.0.0:4311".to_string(),
             server4311_status: RuntimeServiceStatus {
                 state: "stopped".to_string(),
@@ -200,6 +262,7 @@ fn build_runtime_status(connection: &ConnectionConfig) -> RuntimeStatus {
         } => RuntimeStatus {
             active_mode: "remoteClient".to_string(),
             host_supported: is_desktop_platform(),
+            native_app_url: native_app_url.to_string(),
             resolved_bind_address: server_base_url.clone(),
             server4311_status: RuntimeServiceStatus {
                 state: "stopped".to_string(),
@@ -348,22 +411,73 @@ fn start_desktop_host_children(
     Ok(())
 }
 
-fn refresh_runtime_for_connection(connection: &ConnectionConfig, runtime: &mut RuntimeStatus) {
-    *runtime = build_runtime_status(connection);
-    if matches!(connection, ConnectionConfig::Host { .. }) {
-        runtime.server4311_status.state = "running".to_string();
-        runtime.web4312_status.state = "running".to_string();
+fn native_app_url() -> String {
+    if cfg!(target_os = "windows") || cfg!(target_os = "android") {
+        "http://tauri.localhost/".to_string()
+    } else {
+        "tauri://localhost/".to_string()
     }
 }
 
-fn redirect_host_window(app: &AppHandle, connection: &ConnectionConfig) {
+fn refresh_runtime_for_connection(
+    connection: &ConnectionConfig,
+    native_app_url: &str,
+    runtime: &mut RuntimeStatus,
+) {
+    *runtime = build_active_runtime_status(connection, native_app_url);
+}
+
+fn redirect_host_window(
+    app: &AppHandle,
+    connection: &ConnectionConfig,
+    suppress_mode_picker: bool,
+) {
     if !matches!(connection, ConnectionConfig::Host { .. }) {
         return;
     }
 
     if let Some(window) = app.get_webview_window("main") {
-        let _ = window.eval("window.location.replace('http://127.0.0.1:4312');");
+        let target_url = if suppress_mode_picker {
+            format!("{HOST_WINDOW_URL}{MODE_PICKER_DONE_HASH}")
+        } else {
+            HOST_WINDOW_URL.to_string()
+        };
+        let script = format!("window.location.replace({target_url:?});");
+        let _ = window.eval(&script);
     }
+}
+
+fn apply_connection_config(
+    app: &AppHandle,
+    state: &State<AppStateInner>,
+    next_connection: ConnectionConfig,
+    suppress_mode_picker: bool,
+) -> Result<Bootstrap, String> {
+    validate_connection_config(&next_connection)?;
+    save_connection_config_file(app, &next_connection)?;
+
+    {
+        let mut connection = state.connection.lock().expect("connection mutex poisoned");
+        *connection = next_connection.clone();
+    }
+
+    {
+        let mut runtime = state.runtime.lock().expect("runtime mutex poisoned");
+        let native_app_url = runtime.native_app_url.clone();
+        refresh_runtime_for_connection(&next_connection, &native_app_url, &mut runtime);
+    }
+
+    {
+        let mut children = state.children.lock().expect("children mutex poisoned");
+        if matches!(next_connection, ConnectionConfig::Host { .. }) {
+            start_desktop_host_children(app, &next_connection, &mut children)?;
+        } else {
+            stop_children(&mut children);
+        }
+    }
+
+    redirect_host_window(app, &next_connection, suppress_mode_picker);
+    Ok(farfield_get_bootstrap(state.clone()))
 }
 
 #[tauri::command]
@@ -373,14 +487,25 @@ fn farfield_get_bootstrap(state: State<AppStateInner>) -> Bootstrap {
         .lock()
         .expect("connection mutex poisoned")
         .clone();
-    let runtime = state.runtime.lock().expect("runtime mutex poisoned").clone();
+    let runtime = state
+        .runtime
+        .lock()
+        .expect("runtime mutex poisoned")
+        .clone();
 
-    Bootstrap { connection, runtime }
+    Bootstrap {
+        connection,
+        runtime,
+    }
 }
 
 #[tauri::command]
 fn farfield_get_runtime_status(state: State<AppStateInner>) -> RuntimeStatus {
-    state.runtime.lock().expect("runtime mutex poisoned").clone()
+    state
+        .runtime
+        .lock()
+        .expect("runtime mutex poisoned")
+        .clone()
 }
 
 #[tauri::command]
@@ -389,33 +514,35 @@ fn farfield_set_connection_config(
     state: State<AppStateInner>,
     config_json: String,
 ) -> Result<ConnectionConfig, String> {
-    let next_connection =
-        serde_json::from_str::<ConnectionConfig>(&config_json).map_err(|error| error.to_string())?;
-    validate_connection_config(&next_connection)?;
-    save_connection_config_file(&app, &next_connection)?;
-
-    {
-        let mut connection = state.connection.lock().expect("connection mutex poisoned");
-        *connection = next_connection.clone();
-    }
-
-    {
-        let mut runtime = state.runtime.lock().expect("runtime mutex poisoned");
-        refresh_runtime_for_connection(&next_connection, &mut runtime);
-    }
-
-    {
-        let mut children = state.children.lock().expect("children mutex poisoned");
-        if matches!(next_connection, ConnectionConfig::Host { .. }) {
-            start_desktop_host_children(&app, &next_connection, &mut children)?;
-        } else {
-            stop_children(&mut children);
-        }
-    }
-
-    redirect_host_window(&app, &next_connection);
-
+    let next_connection = serde_json::from_str::<ConnectionConfig>(&config_json)
+        .map_err(|error| error.to_string())?;
+    let _ = apply_connection_config(&app, &state, next_connection.clone(), false)?;
     Ok(next_connection)
+}
+
+#[tauri::command]
+fn farfield_activate_host_mode(
+    app: AppHandle,
+    state: State<AppStateInner>,
+) -> Result<Bootstrap, String> {
+    if !is_desktop_platform() {
+        return Err("Host mode is only supported on desktop".to_string());
+    }
+    let existing_connection = state
+        .connection
+        .lock()
+        .expect("connection mutex poisoned")
+        .clone();
+    let shared_secret = match existing_connection {
+        ConnectionConfig::Host { shared_secret, .. } => shared_secret,
+        ConnectionConfig::RemoteClient { .. } => generate_shared_secret(),
+    };
+    let next_connection = ConnectionConfig::Host {
+        version: 1,
+        server_base_url: HOST_SERVER_BASE_URL.to_string(),
+        shared_secret,
+    };
+    apply_connection_config(&app, &state, next_connection, true)
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -423,7 +550,8 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let connection = load_connection_config(&app.handle());
-            let runtime = build_runtime_status(&connection);
+            let native_app_url = native_app_url();
+            let runtime = build_runtime_status(&connection, &native_app_url);
             let state = AppStateInner {
                 connection: Mutex::new(connection.clone()),
                 runtime: Mutex::new(runtime.clone()),
@@ -432,24 +560,52 @@ pub fn run() {
 
             app.manage(state);
 
-            if matches!(connection, ConnectionConfig::Host { .. }) {
-                let app_state: State<'_, AppStateInner> = app.state();
-                let mut children = app_state.children.lock().expect("children mutex poisoned");
-                start_desktop_host_children(&app.handle(), &connection, &mut children)?;
-                drop(children);
-                let mut runtime_state = app_state.runtime.lock().expect("runtime mutex poisoned");
-                refresh_runtime_for_connection(&connection, &mut runtime_state);
-                drop(runtime_state);
-                redirect_host_window(&app.handle(), &connection);
-            }
-
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             farfield_get_bootstrap,
             farfield_get_runtime_status,
-            farfield_set_connection_config
+            farfield_set_connection_config,
+            farfield_activate_host_mode
         ])
         .run(tauri::generate_context!())
         .expect("error while running Farfield Tauri app");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{native_app_url, validate_remote_server_base_url};
+    use url::Url;
+
+    #[test]
+    fn native_app_url_is_a_valid_origin() {
+        let parsed = Url::parse(&native_app_url()).expect("native app url must parse");
+        assert_eq!(parsed.host_str(), Some("localhost"));
+        assert!(parsed.query().is_none());
+        assert!(parsed.fragment().is_none());
+    }
+
+    #[test]
+    fn accepts_plain_lan_origin_for_remote_client_mode() {
+        let result = validate_remote_server_base_url("http://192.168.1.25:4311");
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn rejects_remote_client_urls_with_paths() {
+        let result = validate_remote_server_base_url("http://192.168.1.25:4311/api");
+        assert_eq!(
+            result,
+            Err("Remote client URL cannot include a path".to_string())
+        );
+    }
+
+    #[test]
+    fn rejects_remote_client_urls_with_query_strings() {
+        let result = validate_remote_server_base_url("http://192.168.1.25:4311?foo=bar");
+        assert_eq!(
+            result,
+            Err("Remote client URL cannot include a query string".to_string())
+        );
+    }
 }

@@ -64,6 +64,7 @@ import {
   type AgentId,
 } from "@/lib/api";
 import {
+  activateNativeHostMode,
   loadNativeBootstrap,
   saveNativeConnectionConfig,
   type NativeRuntimeStatus,
@@ -571,6 +572,7 @@ const PROVIDER_CATALOG_CACHE_TTL_MS = 20_000;
 const CORE_REFRESH_INTERVAL_MS = 5_000;
 const SELECTED_THREAD_REFRESH_INTERVAL_MS = 1_000;
 const DEBUG_UI_ENABLED = import.meta.env.MODE !== "production";
+const MODE_PICKER_DONE_HASH = "#mode-chosen";
 const MOBILE_SIDEBAR_WIDTH_PX = 256;
 const MOBILE_SWIPE_EDGE_PX = 24;
 const MOBILE_SIDEBAR_TOGGLE_THRESHOLD_PX = 88;
@@ -1066,6 +1068,167 @@ function UsageRing({
   );
 }
 
+function NativeModeLanding({
+  hostSupported,
+  serverBaseUrlDraft,
+  sharedSecretDraft,
+  hasServerBaseUrlDraftChanges,
+  onServerBaseUrlDraftChange,
+  onSharedSecretDraftChange,
+  onActivateHost,
+  onConnectClient,
+}: {
+  hostSupported: boolean;
+  serverBaseUrlDraft: string;
+  sharedSecretDraft: string;
+  hasServerBaseUrlDraftChanges: boolean;
+  onServerBaseUrlDraftChange: (value: string) => void;
+  onSharedSecretDraftChange: (value: string) => void;
+  onActivateHost: () => void;
+  onConnectClient: () => void;
+}): React.JSX.Element {
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 1 }}
+      className="fixed inset-0 z-[80] overflow-y-auto bg-background"
+    >
+      <div className="mx-auto flex min-h-screen w-full max-w-4xl flex-col justify-center px-4 py-8 md:px-8">
+        <div className="rounded-[28px] border border-border bg-card shadow-sm">
+          <div className="border-b border-border px-6 py-5 md:px-8">
+            <div className="inline-flex items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-[11px] font-medium uppercase tracking-[0.2em] text-muted-foreground">
+              <CircleDot size={12} />
+              Connection Mode
+            </div>
+            <div className="mt-4 max-w-2xl space-y-2">
+              <h1 className="text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
+                Start this desktop as host or client.
+              </h1>
+              <p className="text-sm leading-6 text-muted-foreground">
+                {hostSupported
+                  ? "Host runs Codex on this machine. Client connects to another desktop over port 4311 with a shared secret."
+                  : "Connect to another desktop over port 4311 with a shared secret."}
+              </p>
+            </div>
+          </div>
+
+          <div
+            className={`grid gap-5 p-6 md:p-8 ${
+              hostSupported ? "md:grid-cols-2" : ""
+            }`}
+          >
+            {hostSupported && (
+              <div className="rounded-3xl border border-border bg-muted/30 p-5">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-2xl bg-foreground text-background">
+                  <CircleDot size={18} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-base font-semibold text-foreground">
+                    Use As Host
+                  </div>
+                  <div className="mt-1 text-sm leading-6 text-muted-foreground">
+                    Starts the local host services on this machine.
+                  </div>
+                </div>
+              </div>
+              <div className="mt-5 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                <span className="rounded-full border border-border bg-background px-2.5 py-1">
+                  Starts 4311
+                </span>
+                <span className="rounded-full border border-border bg-background px-2.5 py-1">
+                  Starts 4312
+                </span>
+              </div>
+              <Button
+                type="button"
+                onClick={onActivateHost}
+                className="mt-6 h-10 rounded-full px-5 text-sm"
+              >
+                Use As Host
+              </Button>
+              </div>
+            )}
+
+            <div className="rounded-3xl border border-border bg-muted/30 p-5">
+              <div className="flex items-start gap-3">
+                <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-2xl bg-muted text-foreground ring-1 ring-border">
+                  <PanelLeft size={18} />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-base font-semibold text-foreground">
+                    Use As Client
+                  </div>
+                  <div className="mt-1 text-sm leading-6 text-muted-foreground">
+                    Connect to another desktop with its address and shared secret.
+                  </div>
+                </div>
+              </div>
+              <div className="mt-5 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                <span className="rounded-full border border-border bg-background px-2.5 py-1">
+                  Local ports stay stopped
+                </span>
+              </div>
+              <div className="mt-6 space-y-4">
+              <div className="space-y-1.5">
+                <Label className="text-sm font-medium">
+                  Host Server
+                </Label>
+                <Input
+                  value={serverBaseUrlDraft}
+                  onChange={(event) => onServerBaseUrlDraftChange(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      onConnectClient();
+                    }
+                  }}
+                  placeholder="http://192.168.1.23:4311"
+                  className="h-10 rounded-2xl bg-background text-sm"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <Label className="text-sm font-medium">
+                  Shared Secret
+                </Label>
+                <Input
+                  value={sharedSecretDraft}
+                  onChange={(event) => onSharedSecretDraftChange(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      onConnectClient();
+                    }
+                  }}
+                  placeholder="Paste the host secret"
+                  className="h-10 rounded-2xl bg-background text-sm"
+                  type="password"
+                />
+              </div>
+
+              <Button
+                type="button"
+                onClick={onConnectClient}
+                disabled={
+                  serverBaseUrlDraft.trim().length === 0 ||
+                  sharedSecretDraft.trim().length === 0 ||
+                  !hasServerBaseUrlDraftChanges
+                }
+                className="h-10 w-full rounded-full text-sm"
+              >
+                Connect As Client
+              </Button>
+            </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
 /* ── Main App ───────────────────────────────────────────────── */
 export function App(): React.JSX.Element {
   const { theme, toggle: toggleTheme } = useTheme();
@@ -1158,6 +1321,17 @@ export function App(): React.JSX.Element {
     useState<NativeRuntimeStatus | null>(null);
   const [isNativeManagedConnection, setIsNativeManagedConnection] =
     useState(false);
+  const [shouldShowNativeModePicker, setShouldShowNativeModePicker] =
+    useState(false);
+  const isNativeModeActivated =
+    !isNativeManagedConnection ||
+    (nativeRuntimeStatus !== null &&
+      nativeRuntimeStatus.activeMode !== "unconfigured");
+  const shouldRenderNativeModeLanding =
+    isNativeManagedConnection &&
+    shouldShowNativeModePicker &&
+    nativeRuntimeStatus !== null &&
+    nativeRuntimeStatus.activeMode === "unconfigured";
 
   /* UI state */
   const [activeTab, setActiveTab] = useState<"chat" | "debug">(
@@ -1782,6 +1956,15 @@ export function App(): React.JSX.Element {
           setNativeBootstrap(nativeBootstrap);
           setNativeRuntimeStatus(nativeBootstrap.runtime);
           setIsNativeManagedConnection(true);
+          if (
+            window.location.hash === MODE_PICKER_DONE_HASH &&
+            nativeBootstrap.runtime.activeMode !== "unconfigured"
+          ) {
+            window.history.replaceState(null, "", window.location.pathname);
+          }
+          if (nativeBootstrap.runtime.activeMode === "unconfigured") {
+            setShouldShowNativeModePicker(true);
+          }
           setServerBaseUrlState(nativeBootstrap.connection.serverBaseUrl);
           setServerBaseUrlDraft(nativeBootstrap.connection.serverBaseUrl);
           setSharedSecret(nativeBootstrap.connection.sharedSecret);
@@ -2335,6 +2518,9 @@ export function App(): React.JSX.Element {
 
   const refreshAll = useCallback(async () => {
     try {
+      if (!isNativeModeActivated) {
+        return;
+      }
       setError("");
       await loadCoreData();
       if (selectedThreadIdRef.current)
@@ -2345,7 +2531,7 @@ export function App(): React.JSX.Element {
     } catch (e) {
       setError(toErrorMessage(e));
     }
-  }, [loadCoreData, loadSelectedThread]);
+  }, [isNativeModeActivated, loadCoreData, loadSelectedThread]);
 
   const saveServerTarget = useCallback(async () => {
     try {
@@ -2355,18 +2541,46 @@ export function App(): React.JSX.Element {
         sharedSecret: sharedSecretDraft,
         saveNativeConnection: saveNativeConnectionConfig,
       });
+      const shouldLeaveHostShell =
+        isNativeManagedConnection &&
+        nativeRuntimeStatus?.activeMode === "host" &&
+        nextConnection.mode === "remoteClient";
+
+      if (shouldLeaveHostShell) {
+        window.location.replace(
+          `${nativeRuntimeStatus.nativeAppUrl}${MODE_PICKER_DONE_HASH}`,
+        );
+        return;
+      }
+
+      if (isNativeManagedConnection) {
+        const nextBootstrap = await loadNativeBootstrap();
+        if (nextBootstrap !== null) {
+          setNativeBootstrap(nextBootstrap);
+          setNativeRuntimeStatus(nextBootstrap.runtime);
+        }
+      }
+
       setServerBaseUrlState(nextConnection.baseUrl);
       setServerBaseUrlDraft(nextConnection.baseUrl);
       setSharedSecret(nextConnection.sharedSecret ?? "");
       setSharedSecretDraft(nextConnection.sharedSecret ?? "");
       setHasSavedServerTarget(nextConnection.hasSavedTarget);
+      setShouldShowNativeModePicker(false);
+      setIsSettingsModalOpen(false);
       agentCacheRef.current = null;
       providerCatalogCacheRef.current.clear();
       await refreshAll();
     } catch (e) {
       setError(toErrorMessage(e));
     }
-  }, [refreshAll, serverBaseUrlDraft, sharedSecretDraft]);
+  }, [
+    isNativeManagedConnection,
+    nativeRuntimeStatus,
+    refreshAll,
+    serverBaseUrlDraft,
+    sharedSecretDraft,
+  ]);
 
   const useDefaultServerTarget = useCallback(async () => {
     try {
@@ -2385,6 +2599,33 @@ export function App(): React.JSX.Element {
       setError(toErrorMessage(e));
     }
   }, [refreshAll]);
+
+  const activateHostConnection = useCallback(async () => {
+    try {
+      setError("");
+      if (isNativeManagedConnection) {
+        const nextBootstrap = await activateNativeHostMode();
+        if (nextBootstrap !== null) {
+          setNativeBootstrap(nextBootstrap);
+          setNativeRuntimeStatus(nextBootstrap.runtime);
+          setServerBaseUrlState(nextBootstrap.connection.serverBaseUrl);
+          setServerBaseUrlDraft(nextBootstrap.connection.serverBaseUrl);
+          setSharedSecret(nextBootstrap.connection.sharedSecret);
+          setSharedSecretDraft(nextBootstrap.connection.sharedSecret);
+          setHasSavedServerTarget(false);
+          setShouldShowNativeModePicker(false);
+          setIsSettingsModalOpen(false);
+          return;
+        }
+      }
+
+      setShouldShowNativeModePicker(false);
+      setIsSettingsModalOpen(false);
+      await useDefaultServerTarget();
+    } catch (e) {
+      setError(toErrorMessage(e));
+    }
+  }, [isNativeManagedConnection, useDefaultServerTarget]);
 
   useEffect(() => {
     selectedThreadIdRef.current = selectedThreadId;
@@ -2429,7 +2670,7 @@ export function App(): React.JSX.Element {
   }, [activeTab, selectedThreadId]);
 
   useEffect(() => {
-    if (!isConnectionReady) {
+    if (!isConnectionReady || !isNativeModeActivated) {
       return;
     }
     void (async () => {
@@ -2452,10 +2693,10 @@ export function App(): React.JSX.Element {
         setError(toErrorMessage(error));
       }
     })();
-  }, [isConnectionReady]);
+  }, [isConnectionReady, isNativeModeActivated]);
 
   useEffect(() => {
-    if (!isConnectionReady) {
+    if (!isConnectionReady || !isNativeModeActivated) {
       return;
     }
     const loadCore = loadCoreDataRef.current;
@@ -2463,10 +2704,10 @@ export function App(): React.JSX.Element {
       return;
     }
     void loadCore().catch((error) => setError(toErrorMessage(error)));
-  }, [isConnectionReady, selectedAgentId]);
+  }, [isConnectionReady, isNativeModeActivated, selectedAgentId]);
 
   useEffect(() => {
-    if (!isConnectionReady) {
+    if (!isConnectionReady || !isNativeModeActivated) {
       return;
     }
     const refreshCoreData = () => {
@@ -2526,10 +2767,10 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
     };
-  }, [isConnectionReady]);
+  }, [isConnectionReady, isNativeModeActivated]);
 
   useEffect(() => {
-    if (!isConnectionReady) {
+    if (!isConnectionReady || !isNativeModeActivated) {
       return;
     }
     const stopSelectedThreadRefresh = () => {
@@ -2599,10 +2840,10 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
     };
-  }, [isConnectionReady, selectedThreadId]);
+  }, [isConnectionReady, isNativeModeActivated, selectedThreadId]);
 
   useEffect(() => {
-    if (!selectedThreadId) {
+    if (!isNativeModeActivated || !selectedThreadId) {
       setLiveState(null);
       setReadThreadState(null);
       setStreamEvents([]);
@@ -2627,10 +2868,10 @@ export function App(): React.JSX.Element {
       includeTurns: true,
       includeStreamEvents: activeTabRef.current === "debug",
     }).catch((e) => setError(toErrorMessage(e)));
-  }, [selectedThreadId]);
+  }, [isNativeModeActivated, selectedThreadId]);
 
   useEffect(() => {
-    if (!isConnectionReady) {
+    if (!isConnectionReady || !isNativeModeActivated) {
       return;
     }
     let disposed = false;
@@ -2852,7 +3093,7 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pageshow", onPageShow);
       closeEvents();
     };
-  }, [isConnectionReady, serverBaseUrl, sharedSecret]);
+  }, [isConnectionReady, isNativeModeActivated, serverBaseUrl, sharedSecret]);
 
   useEffect(() => {
     if (!activeRequest) {
@@ -4837,6 +5078,22 @@ export function App(): React.JSX.Element {
           </div>
         </div>
       </div>
+      {shouldRenderNativeModeLanding && (
+        <NativeModeLanding
+          hostSupported={nativeRuntimeStatus.hostSupported}
+          serverBaseUrlDraft={serverBaseUrlDraft}
+          sharedSecretDraft={sharedSecretDraft}
+          hasServerBaseUrlDraftChanges={hasServerBaseUrlDraftChanges}
+          onServerBaseUrlDraftChange={setServerBaseUrlDraft}
+          onSharedSecretDraftChange={setSharedSecretDraft}
+          onActivateHost={() => {
+            void activateHostConnection();
+          }}
+          onConnectClient={() => {
+            void saveServerTarget();
+          }}
+        />
+      )}
       <AnimatePresence>
         {isSettingsModalOpen && (
           <motion.div
@@ -4858,7 +5115,7 @@ export function App(): React.JSX.Element {
                 <div>
                   <div className="text-sm font-semibold">Settings</div>
                   <div className="text-xs text-muted-foreground">
-                    Configure how this frontend connects to your server.
+                    Choose whether this desktop acts as the host or connects to another host.
                   </div>
                 </div>
                 <Button
@@ -4874,10 +5131,69 @@ export function App(): React.JSX.Element {
               </div>
 
               <div className="p-4 space-y-3">
+                {isNativeManagedConnection && (
+                  <div className="grid gap-3 md:grid-cols-2">
+                    {nativeRuntimeStatus?.hostSupported && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void activateHostConnection();
+                        }}
+                        className={`rounded-xl border p-3 text-left transition ${
+                          nativeRuntimeStatus?.activeMode === "host"
+                            ? "border-foreground/60 bg-foreground/[0.06]"
+                            : "border-border hover:border-foreground/40"
+                        }`}
+                      >
+                        <div className="text-sm font-semibold">Use As Host</div>
+                        <div className="mt-1 text-xs text-muted-foreground">
+                          Starts local 4311 and 4312. Codex runs on this machine, and clients connect to this machine&apos;s 4311.
+                        </div>
+                        {nativeRuntimeStatus?.activeMode === "host" && (
+                          <div className="mt-2 text-[11px] font-medium text-foreground/80">
+                            Active now
+                          </div>
+                        )}
+                      </button>
+                    )}
+                    <div
+                      className={`rounded-xl border p-3 ${
+                        nativeRuntimeStatus?.activeMode === "remoteClient"
+                          ? "border-foreground/60 bg-foreground/[0.06]"
+                          : "border-border"
+                      }`}
+                    >
+                      <div className="text-sm font-semibold">Use As Client</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        Does not start local 4311 or 4312. This window loads the packaged UI and connects directly to another machine&apos;s 4311.
+                      </div>
+                      {nativeRuntimeStatus?.activeMode === "remoteClient" && (
+                        <div className="mt-2 text-[11px] font-medium text-foreground/80">
+                          Active now
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {isNativeManagedConnection &&
+                  nativeRuntimeStatus?.hostSupported &&
+                  nativeRuntimeStatus?.activeMode === "host" && (
+                    <div className="space-y-1.5 rounded-xl border border-border bg-muted/25 p-3">
+                      <Label className="text-sm font-medium">Host Secret</Label>
+                      <div className="text-xs text-muted-foreground">
+                        Client mode must use this secret when connecting to this machine&apos;s 4311.
+                      </div>
+                      <div className="break-all rounded-md bg-background px-2.5 py-2 font-mono text-xs">
+                        {sharedSecret}
+                      </div>
+                    </div>
+                  )}
+
                 <div className="space-y-1.5">
                   <Label className="text-sm font-medium">Server</Label>
                   <div className="text-xs text-muted-foreground">
-                    Enter the Farfield server origin for remote client mode.
+                    Enter the other machine&apos;s Farfield server origin for client mode.
                   </div>
                   <Input
                     value={serverBaseUrlDraft}
@@ -4896,7 +5212,7 @@ export function App(): React.JSX.Element {
                 <div className="space-y-1.5">
                   <Label className="text-sm font-medium">Shared Secret</Label>
                   <div className="text-xs text-muted-foreground">
-                    Required for any non-local connection to port 4311.
+                    Required when this desktop connects to another machine&apos;s 4311.
                   </div>
                   <Input
                     value={sharedSecretDraft}
@@ -4927,7 +5243,7 @@ export function App(): React.JSX.Element {
                       !hasServerBaseUrlDraftChanges
                     }
                   >
-                    Save
+                    Connect As Client
                   </Button>
                   {!isNativeManagedConnection && (
                     <Button
@@ -4954,7 +5270,9 @@ export function App(): React.JSX.Element {
                   {isNativeManagedConnection
                     ? nativeRuntimeStatus?.activeMode === "host"
                       ? "Native host mode"
-                      : "Native remote-client mode"
+                      : nativeRuntimeStatus?.activeMode === "remoteClient"
+                        ? "Native remote-client mode"
+                        : "Native mode not activated"
                     : hasSavedServerTarget
                       ? "Saved server target"
                       : "Automatic server target"}
@@ -4971,6 +5289,11 @@ export function App(): React.JSX.Element {
                       Bind: {nativeRuntimeStatus.resolvedBindAddress}
                     </div>
                   </>
+                )}
+                {shouldShowNativeModePicker && (
+                  <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                    Choose host to run Codex on this machine, or choose client to connect to another desktop on your LAN over port 4311.
+                  </div>
                 )}
               </div>
             </motion.div>

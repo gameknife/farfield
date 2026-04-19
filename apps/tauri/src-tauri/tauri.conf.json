@@ -30,9 +30,7 @@
       "icons/icon.png"
     ],
     "resources": [
-      "../../web/dist",
-      "binaries/farfield-server.exe",
-      "binaries/web-host.exe"
+      "../../web/dist"
     ]
   }
 }
