@@ -857,6 +857,89 @@ describe("App", () => {
     expect(await screen.findByTitle("Waiting for user input")).toBeTruthy();
   });
 
+  it("does not reload a non-live selected thread when another thread updates", async () => {
+    const idleThreadId = "thread-idle";
+    const liveThreadId = "thread-live";
+    let idleThreadReadCount = 0;
+
+    window.history.replaceState(null, "", `/threads/${idleThreadId}`);
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: idleThreadId,
+          provider: "codex",
+          preview: "idle thread",
+          createdAt: 1700000000,
+          updatedAt: 1700000000,
+          cwd: "/tmp/project",
+          source: "codex",
+        },
+        {
+          id: liveThreadId,
+          provider: "codex",
+          preview: "live thread",
+          isGenerating: true,
+          createdAt: 1700000001,
+          updatedAt: 1700000001,
+          cwd: "/tmp/project",
+          source: "codex",
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    readThreadResolver = (targetThreadId: string) => ({
+      ok: true,
+      thread: (() => {
+        if (targetThreadId === idleThreadId) {
+          idleThreadReadCount += 1;
+        }
+        return buildConversationStateFixture(targetThreadId, "gpt-5.3-codex", {
+          provider: "codex",
+        });
+      })(),
+    });
+
+    liveStateResolver = (targetThreadId: string, _provider: ProviderId) => ({
+      kind: "readLiveState",
+      threadId: targetThreadId,
+      ownerClientId: null,
+      conversationState: null,
+      liveStateError: null,
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(idleThreadReadCount).toBeGreaterThan(0);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    idleThreadReadCount = 0;
+
+    MockEventSource.emit({
+      kind: "threadUpdated",
+      threadId: liveThreadId,
+      provider: "codex",
+      thread: buildConversationStateFixture(liveThreadId, "gpt-5.3-codex", {
+        provider: "codex",
+        updatedAt: 1700000002,
+      }),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 1400));
+
+    expect(idleThreadReadCount).toBe(0);
+  });
+
   it("prefers live-state requests when read thread is newer but has no pending requests", async () => {
     const threadId = "thread-live-approval-preferred";
     const approvalRequest: UnifiedThreadFixture["requests"][number] = {

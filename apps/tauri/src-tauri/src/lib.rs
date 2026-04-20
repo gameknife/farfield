@@ -5,7 +5,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::Mutex,
 };
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Manager, RunEvent, State};
 use url::Url;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,12 +339,20 @@ fn bun_binary_name() -> &'static str {
 fn stop_children(children: &mut ManagedChildren) {
     if let Some(server_child) = children.server.as_mut() {
         let _ = server_child.kill();
+        let _ = server_child.wait();
     }
     if let Some(web_host_child) = children.web_host.as_mut() {
         let _ = web_host_child.kill();
+        let _ = web_host_child.wait();
     }
     children.server = None;
     children.web_host = None;
+}
+
+fn cleanup_managed_children(app: &AppHandle) {
+    let state = app.state::<AppStateInner>();
+    let mut children = state.children.lock().expect("children mutex poisoned");
+    stop_children(&mut children);
 }
 
 fn start_desktop_host_children(
@@ -555,7 +563,7 @@ fn farfield_activate_host_mode(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .setup(|app| {
             let connection = load_connection_config(&app.handle());
             let native_app_url = native_app_url();
@@ -576,8 +584,15 @@ pub fn run() {
             farfield_set_connection_config,
             farfield_activate_host_mode
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Farfield Tauri app");
+        .build(tauri::generate_context!())
+        .expect("error while building Farfield Tauri app");
+
+    app.run(|app, event| match event {
+        RunEvent::ExitRequested { .. } | RunEvent::Exit => {
+            cleanup_managed_children(app);
+        }
+        _ => {}
+    });
 }
 
 #[cfg(test)]

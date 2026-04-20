@@ -1345,6 +1345,8 @@ export function App(): React.JSX.Element {
   );
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isConnectionReady, setIsConnectionReady] = useState(false);
+  const [isNativeHostStartupPending, setIsNativeHostStartupPending] =
+    useState(false);
   const [nativeRuntimeStatus, setNativeRuntimeStatus] =
     useState<NativeRuntimeStatus | null>(null);
   const [isNativeManagedConnection, setIsNativeManagedConnection] =
@@ -1405,6 +1407,7 @@ export function App(): React.JSX.Element {
     refreshHistory: false,
     refreshSelectedThread: false,
   });
+  const shouldAutoRefreshSelectedThreadRef = useRef(false);
   const coreRefreshIntervalRef = useRef<number | null>(null);
   const selectedThreadRefreshIntervalRef = useRef<number | null>(null);
   const mobileSidebarSwipeRef = useRef<MobileSidebarSwipeGesture | null>(null);
@@ -1475,6 +1478,27 @@ export function App(): React.JSX.Element {
     () => buildThreadListErrorMessage(threadListErrors),
     [threadListErrors],
   );
+  const selectedLiveState = useMemo(() => {
+    if (selectedThreadId === null) {
+      return null;
+    }
+    if (liveState === null || liveState.threadId !== selectedThreadId) {
+      return null;
+    }
+    return liveState;
+  }, [liveState, selectedThreadId]);
+  const selectedReadThreadState = useMemo(() => {
+    if (selectedThreadId === null) {
+      return null;
+    }
+    if (
+      readThreadState === null ||
+      readThreadState.thread.id !== selectedThreadId
+    ) {
+      return null;
+    }
+    return readThreadState;
+  }, [readThreadState, selectedThreadId]);
   const selectedAgentLabel = selectedAgentDescriptor?.label ?? "Agent";
   const reversedHistory = useMemo(() => history.slice().reverse(), [history]);
   const hasServerBaseUrlDraftChanges =
@@ -1594,21 +1618,21 @@ export function App(): React.JSX.Element {
     return allGroups;
   }, [agentDescriptors, projectColors, sidebarOrder, threads]);
   const conversationState = useMemo(() => {
-    const liveConversationState = liveState?.conversationState ?? null;
-    const readConversationState = readThreadState?.thread ?? null;
+    const liveConversationState = selectedLiveState?.conversationState ?? null;
+    const readConversationState = selectedReadThreadState?.thread ?? null;
     if (liveConversationState !== null) {
       return liveConversationState;
     }
     return readConversationState;
-  }, [liveState?.conversationState, readThreadState?.thread]);
+  }, [selectedLiveState, selectedReadThreadState]);
   const requestSourceState = useMemo(() => {
-    const liveConversationState = liveState?.conversationState ?? null;
-    const readConversationState = readThreadState?.thread ?? null;
+    const liveConversationState = selectedLiveState?.conversationState ?? null;
+    const readConversationState = selectedReadThreadState?.thread ?? null;
     if (liveConversationState) {
       return liveConversationState;
     }
     return readConversationState;
-  }, [liveState?.conversationState, readThreadState?.thread]);
+  }, [selectedLiveState, selectedReadThreadState]);
 
   const pendingRequests = useMemo(() => {
     if (!requestSourceState) return [] as PendingRequest[];
@@ -1637,12 +1661,12 @@ export function App(): React.JSX.Element {
   const activeApprovalRequest = pendingApprovalRequests[0] ?? null;
   const activeInformationalRequest = pendingInformationalRequests[0] ?? null;
   const liveStateStreamError = useMemo(() => {
-    const errorState = liveState?.liveStateError;
+    const errorState = selectedLiveState?.liveStateError;
     if (!errorState) {
       return null;
     }
     return errorState;
-  }, [liveState?.liveStateError]);
+  }, [selectedLiveState]);
 
   const activeRequest = useMemo(() => {
     if (!pendingRequests.length) return null;
@@ -1669,6 +1693,13 @@ export function App(): React.JSX.Element {
     pendingRequests.length,
     selectedThreadId,
   ]);
+  const shouldAutoRefreshSelectedThread = useMemo(
+    () =>
+      isThreadGeneratingState(conversationState) ||
+      selectedThreadWaitingState?.waitingOnApproval === true ||
+      selectedThreadWaitingState?.waitingOnUserInput === true,
+    [conversationState, selectedThreadWaitingState],
+  );
 
   const resolvedSelectedThreadProvider = useMemo((): AgentId | null => {
     if (!selectedThreadId) {
@@ -1678,31 +1709,24 @@ export function App(): React.JSX.Element {
       return selectedThread.provider;
     }
 
-    const readProvider =
-      readThreadState?.thread.id === selectedThreadId
-        ? readThreadState.thread.provider
-        : null;
+    const readProvider = selectedReadThreadState?.thread.provider ?? null;
     if (readProvider) {
       return readProvider;
     }
 
-    const liveProvider =
-      liveState?.threadId === selectedThreadId
-        ? (liveState.conversationState?.provider ?? null)
-        : null;
+    const liveProvider = selectedLiveState?.conversationState?.provider ?? null;
     if (liveProvider) {
       return liveProvider;
     }
 
     return null;
   }, [
-    liveState?.conversationState?.provider,
-    liveState?.threadId,
-    readThreadState?.thread.id,
-    readThreadState?.thread.provider,
     selectedThread?.provider,
     selectedThreadId,
+    selectedLiveState,
+    selectedReadThreadState,
   ]);
+  const selectedThreadOwnerClientId = selectedLiveState?.ownerClientId ?? null;
 
   const activeThreadAgentId: AgentId = useMemo(
     () => resolvedSelectedThreadProvider ?? selectedAgentId,
@@ -2039,6 +2063,15 @@ export function App(): React.JSX.Element {
       health?.state.ipcConnected === false ||
       health?.state.ipcInitialized === false
     : !openCodeConnected;
+  const isShowingNativeHostStartup = Boolean(
+    isNativeHostStartupPending &&
+      isNativeManagedConnection &&
+      nativeRuntimeStatus?.activeMode === "host" &&
+      !shouldRenderNativeModeLanding,
+  );
+  const nativeHostStartupTitle = isConnectionReady
+    ? "Starting local Farfield services…"
+    : "Preparing native host mode…";
 
   useEffect(() => {
     let cancelled = false;
@@ -2068,6 +2101,9 @@ export function App(): React.JSX.Element {
           setSharedSecret(nativeBootstrap.connection.sharedSecret);
           setSharedSecretDraft(nativeBootstrap.connection.sharedSecret);
           setHasSavedServerTarget(nativeBootstrap.connection.mode === "remoteClient");
+          setIsNativeHostStartupPending(
+            nativeBootstrap.runtime.activeMode === "host",
+          );
         }
       } catch (error) {
         if (cancelled) {
@@ -2085,6 +2121,20 @@ export function App(): React.JSX.Element {
       cancelled = true;
     };
   }, []);
+
+  useEffect(() => {
+    if (
+      !isNativeManagedConnection ||
+      nativeRuntimeStatus?.activeMode !== "host" ||
+      shouldRenderNativeModeLanding
+    ) {
+      setIsNativeHostStartupPending(false);
+    }
+  }, [
+    isNativeManagedConnection,
+    nativeRuntimeStatus?.activeMode,
+    shouldRenderNativeModeLanding,
+  ]);
 
   /* Data loading */
   const loadCoreData = useCallback(async () => {
@@ -2225,6 +2275,14 @@ export function App(): React.JSX.Element {
       (canLoadModes || canLoadModels) && !shouldLoadCatalog && cachedCatalog;
     const shouldFetchCatalog =
       (canLoadModes || canLoadModels) && !hasCachedCatalog;
+
+    if (
+      nh !== null &&
+      isNativeManagedConnection &&
+      nativeRuntimeStatus?.activeMode === "host"
+    ) {
+      setIsNativeHostStartupPending(false);
+    }
 
     if (hasCachedCatalog) {
       nextModesData = canLoadModes ? cachedCatalog.modes : [];
@@ -2435,7 +2493,12 @@ export function App(): React.JSX.Element {
         return nonPlanDefault?.mode ?? nextModesData[0]?.mode ?? "";
       });
     });
-  }, [agentDescriptors, selectedAgentId]);
+  }, [
+    agentDescriptors,
+    isNativeManagedConnection,
+    nativeRuntimeStatus?.activeMode,
+    selectedAgentId,
+  ]);
 
   const loadSelectedThread = useCallback(
     async (
@@ -2708,6 +2771,7 @@ export function App(): React.JSX.Element {
   const useDefaultServerTarget = useCallback(async () => {
     try {
       setError("");
+      setIsNativeHostStartupPending(false);
       const nextConnection = clearConnectionConfig();
       const defaultBaseUrl = nextConnection.baseUrl ?? getDefaultServerBaseUrl();
       setServerBaseUrlState(defaultBaseUrl);
@@ -2726,6 +2790,7 @@ export function App(): React.JSX.Element {
   const activateHostConnection = useCallback(async () => {
     try {
       setError("");
+      setIsNativeHostStartupPending(true);
       if (isNativeManagedConnection) {
         const nextBootstrap = await activateNativeHostMode();
         if (nextBootstrap !== null) {
@@ -2746,6 +2811,7 @@ export function App(): React.JSX.Element {
       setIsSettingsModalOpen(false);
       await useDefaultServerTarget();
     } catch (e) {
+      setIsNativeHostStartupPending(false);
       setError(toErrorMessage(e));
     }
   }, [isNativeManagedConnection, useDefaultServerTarget]);
@@ -2773,6 +2839,10 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
+
+  useEffect(() => {
+    shouldAutoRefreshSelectedThreadRef.current = shouldAutoRefreshSelectedThread;
+  }, [shouldAutoRefreshSelectedThread]);
 
   useEffect(() => {
     const onPopState = () => {
@@ -2910,7 +2980,7 @@ export function App(): React.JSX.Element {
       selectedThreadRefreshIntervalRef.current = null;
     };
 
-    if (!selectedThreadId) {
+    if (!selectedThreadId || !shouldAutoRefreshSelectedThread) {
       stopSelectedThreadRefresh();
       return;
     }
@@ -2925,7 +2995,7 @@ export function App(): React.JSX.Element {
       }
       void load(selectedThreadId, {
         includeTurns: true,
-        includeStreamEvents: activeTabRef.current === "debug",
+        includeStreamEvents: true,
       }).catch((e) =>
         setError(toErrorMessage(e)),
       );
@@ -2969,7 +3039,12 @@ export function App(): React.JSX.Element {
       window.removeEventListener("pagehide", onPageHide);
       window.removeEventListener("pageshow", onPageShow);
     };
-  }, [isConnectionReady, isNativeModeActivated, selectedThreadId]);
+  }, [
+    isConnectionReady,
+    isNativeModeActivated,
+    selectedThreadId,
+    shouldAutoRefreshSelectedThread,
+  ]);
 
   useEffect(() => {
     if (!isNativeModeActivated || !selectedThreadId) {
@@ -2996,10 +3071,10 @@ export function App(): React.JSX.Element {
     if (!load) {
       return;
     }
-    void load(selectedThreadId, {
-      includeTurns: true,
-      includeStreamEvents: activeTabRef.current === "debug",
-    }).catch((e) => setError(toErrorMessage(e)));
+      void load(selectedThreadId, {
+        includeTurns: true,
+        includeStreamEvents: true,
+      }).catch((e) => setError(toErrorMessage(e)));
   }, [isNativeModeActivated, selectedThreadId]);
 
   useEffect(() => {
@@ -3066,7 +3141,7 @@ export function App(): React.JSX.Element {
               if (loadThread) {
                 await loadThread(selectedThreadIdRef.current, {
                   includeTurns: true,
-                  includeStreamEvents: activeTabRef.current === "debug",
+                  includeStreamEvents: true,
                 });
               }
             }
@@ -3103,7 +3178,8 @@ export function App(): React.JSX.Element {
           scheduleRefresh(
             true,
             activeTabRef.current === "debug",
-            Boolean(selectedThreadIdRef.current),
+            shouldAutoRefreshSelectedThreadRef.current &&
+              Boolean(selectedThreadIdRef.current),
           );
         },
         onMessage: (eventData) => {
@@ -3334,8 +3410,8 @@ export function App(): React.JSX.Element {
       threads,
       threadListErrors,
       selectedThreadId,
-      liveState,
-      readThreadState,
+      liveState: selectedLiveState,
+      readThreadState: selectedReadThreadState,
       streamEvents,
       modes,
       models,
@@ -3346,10 +3422,10 @@ export function App(): React.JSX.Element {
   }, [
     activeTab,
     agentDescriptors,
-    liveState,
+    selectedLiveState,
     modes,
     models,
-    readThreadState,
+    selectedReadThreadState,
     selectedAgentId,
     selectedThreadId,
     streamEvents,
@@ -3497,8 +3573,8 @@ export function App(): React.JSX.Element {
           provider: threadAgentId,
           threadId,
           text: draft,
-          ...(liveState?.ownerClientId
-            ? { ownerClientId: liveState.ownerClientId }
+          ...(selectedThreadOwnerClientId
+            ? { ownerClientId: selectedThreadOwnerClientId }
             : {}),
         });
         await refreshAll();
@@ -3512,10 +3588,10 @@ export function App(): React.JSX.Element {
       activeThreadAgentId,
       canSendMessageForActiveAgent,
       hasResolvedSelectedThreadProvider,
-      liveState?.ownerClientId,
       refreshAll,
       selectedAgentId,
       selectedThreadId,
+      selectedThreadOwnerClientId,
       upsertSidebarThread,
     ],
   );
@@ -3556,8 +3632,8 @@ export function App(): React.JSX.Element {
         await setCollaborationMode({
           provider: activeThreadAgentId,
           threadId: selectedThreadId,
-          ...(liveState?.ownerClientId
-            ? { ownerClientId: liveState.ownerClientId }
+          ...(selectedThreadOwnerClientId
+            ? { ownerClientId: selectedThreadOwnerClientId }
             : {}),
           collaborationMode: {
             mode: mode.mode,
@@ -3570,7 +3646,7 @@ export function App(): React.JSX.Element {
         });
         await loadSelectedThread(selectedThreadId, {
           includeTurns: true,
-          includeStreamEvents: activeTabRef.current === "debug",
+          includeStreamEvents: true,
         });
       } catch (e) {
         lastAppliedModeSignatureRef.current = previousSignature;
@@ -3583,10 +3659,10 @@ export function App(): React.JSX.Element {
       activeThreadAgentId,
       hasResolvedSelectedThreadProvider,
       isModeSyncing,
-      liveState?.ownerClientId,
       loadSelectedThread,
       modes,
       selectedThreadId,
+      selectedThreadOwnerClientId,
     ],
   );
 
@@ -3609,8 +3685,8 @@ export function App(): React.JSX.Element {
         provider: activeThreadAgentId,
         threadId: selectedThreadId,
         requestId: activeRequest.id,
-        ...(liveState?.ownerClientId
-          ? { ownerClientId: liveState.ownerClientId }
+        ...(selectedThreadOwnerClientId
+          ? { ownerClientId: selectedThreadOwnerClientId }
           : {}),
         response: { answers },
       });
@@ -3625,9 +3701,9 @@ export function App(): React.JSX.Element {
     activeThreadAgentId,
     answerDraft,
     hasResolvedSelectedThreadProvider,
-    liveState?.ownerClientId,
     refreshAll,
     selectedThreadId,
+    selectedThreadOwnerClientId,
   ]);
 
   const skipPendingRequest = useCallback(async () => {
@@ -3643,8 +3719,8 @@ export function App(): React.JSX.Element {
         provider: activeThreadAgentId,
         threadId: selectedThreadId,
         requestId: activeRequest.id,
-        ...(liveState?.ownerClientId
-          ? { ownerClientId: liveState.ownerClientId }
+        ...(selectedThreadOwnerClientId
+          ? { ownerClientId: selectedThreadOwnerClientId }
           : {}),
         response: { answers: {} },
       });
@@ -3658,9 +3734,9 @@ export function App(): React.JSX.Element {
     activeRequest,
     activeThreadAgentId,
     hasResolvedSelectedThreadProvider,
-    liveState?.ownerClientId,
     refreshAll,
     selectedThreadId,
+    selectedThreadOwnerClientId,
   ]);
 
   const resolvePendingApprovalRequest = useCallback(
@@ -3678,8 +3754,8 @@ export function App(): React.JSX.Element {
           provider: activeThreadAgentId,
           threadId: selectedThreadId,
           requestId: activeApprovalRequest.id,
-          ...(liveState?.ownerClientId
-            ? { ownerClientId: liveState.ownerClientId }
+          ...(selectedThreadOwnerClientId
+            ? { ownerClientId: selectedThreadOwnerClientId }
             : {}),
           response: buildApprovalResponse(activeApprovalRequest, action),
         });
@@ -3694,9 +3770,9 @@ export function App(): React.JSX.Element {
       activeApprovalRequest,
       activeThreadAgentId,
       hasResolvedSelectedThreadProvider,
-      liveState?.ownerClientId,
       refreshAll,
       selectedThreadId,
+      selectedThreadOwnerClientId,
     ],
   );
 
@@ -3712,8 +3788,8 @@ export function App(): React.JSX.Element {
       await interruptThread({
         provider: activeThreadAgentId,
         threadId: selectedThreadId,
-        ...(liveState?.ownerClientId
-          ? { ownerClientId: liveState.ownerClientId }
+        ...(selectedThreadOwnerClientId
+          ? { ownerClientId: selectedThreadOwnerClientId }
           : {}),
       });
       await refreshAll();
@@ -3726,9 +3802,9 @@ export function App(): React.JSX.Element {
     activeThreadAgentId,
     canInterruptForActiveAgent,
     hasResolvedSelectedThreadProvider,
-    liveState?.ownerClientId,
     refreshAll,
     selectedThreadId,
+    selectedThreadOwnerClientId,
   ]);
 
   const loadHistoryDetail = useCallback(async (id: string) => {
@@ -4759,6 +4835,32 @@ export function App(): React.JSX.Element {
                 : "flex-1 min-h-0 flex flex-col"
             }
           >
+            <AnimatePresence>
+              {isShowingNativeHostStartup && (
+                <motion.div
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="absolute inset-0 z-30 flex items-center justify-center bg-background/88 backdrop-blur-sm"
+                >
+                  <div className="mx-4 w-full max-w-md rounded-2xl border border-border bg-card/95 px-6 py-5 text-center shadow-2xl">
+                    <div className="mx-auto inline-flex h-11 w-11 items-center justify-center rounded-full border border-border/70 bg-background text-foreground shadow-sm">
+                      <Loader2 size={18} className="animate-spin" />
+                    </div>
+                    <div className="mt-4 text-sm font-medium text-foreground">
+                      {nativeHostStartupTitle}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground">
+                      Waiting for local 4311 and 4312 to come online before
+                      loading sessions.
+                    </div>
+                    <div className="mt-3 text-[11px] text-muted-foreground/80">
+                      This desktop is starting the local host services.
+                    </div>
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
             {/* Error bar */}
             <AnimatePresence>
               {error && (
