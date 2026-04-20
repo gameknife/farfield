@@ -940,6 +940,83 @@ describe("App", () => {
     expect(idleThreadReadCount).toBe(0);
   });
 
+  it("reloads the selected thread when core refresh marks it as generating", async () => {
+    const threadId = "thread-selected-generating-after-refresh";
+    let readCount = 0;
+
+    window.history.replaceState(null, "", `/threads/${threadId}`);
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: threadId,
+          provider: "codex",
+          preview: "thread preview",
+          createdAt: 1700000000,
+          updatedAt: 1700000000,
+          cwd: "/tmp/project",
+          source: "codex",
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    readThreadResolver = (targetThreadId: string) => ({
+      ok: true,
+      thread: (() => {
+        if (targetThreadId === threadId) {
+          readCount += 1;
+        }
+        return buildConversationStateFixture(targetThreadId, "gpt-5.3-codex", {
+          provider: "codex",
+        });
+      })(),
+    });
+
+    liveStateResolver = (targetThreadId: string, _provider: ProviderId) => ({
+      kind: "readLiveState",
+      threadId: targetThreadId,
+      ownerClientId: null,
+      conversationState: null,
+      liveStateError: null,
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(readCount).toBeGreaterThan(0);
+    });
+
+    readCount = 0;
+    threadsFixture = {
+      ...threadsFixture,
+      data: [
+        {
+          ...threadsFixture.data[0]!,
+          isGenerating: true,
+          updatedAt: 1700000001,
+        },
+      ],
+    };
+
+    MockEventSource.emit({
+      kind: "error",
+      message: "refresh core only",
+    });
+
+    await waitFor(() => {
+      expect(readCount).toBeGreaterThan(0);
+    });
+  });
+
   it("prefers live-state requests when read thread is newer but has no pending requests", async () => {
     const threadId = "thread-live-approval-preferred";
     const approvalRequest: UnifiedThreadFixture["requests"][number] = {
@@ -1513,18 +1590,18 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Exploration")).toBeTruthy();
+    expect(await screen.findByText("Activity")).toBeTruthy();
     expect(await screen.findByText("1 code search")).toBeTruthy();
     expect(await screen.findByText("1 file read")).toBeTruthy();
     expect(await screen.findByText("1 web search")).toBeTruthy();
     expect(screen.queryByText("vite streaming SSR")).toBeNull();
     expect(screen.queryByText("Read src/App.tsx")).toBeNull();
 
-    const explorationLabel = await screen.findByText("Exploration");
+    const explorationLabel = await screen.findByText("Activity");
     const explorationButton = explorationLabel.closest("button");
     expect(explorationButton).toBeTruthy();
     if (!explorationButton) {
-      throw new Error("Missing exploration group button");
+      throw new Error("Missing activity group button");
     }
     fireEvent.click(explorationButton);
 
@@ -2269,6 +2346,208 @@ describe("App", () => {
       await screen.findByText("Live updates failed for this thread."),
     ).toBeTruthy();
     expect(screen.queryByText("git status --short")).toBeNull();
+  });
+
+  it("keeps showing thinking when live reduction fails but sidebar still marks the thread as generating", async () => {
+    const threadId = "thread-live-error-still-generating";
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: threadId,
+          provider: "codex",
+          preview: "thread preview",
+          isGenerating: true,
+          createdAt: 1700000000,
+          updatedAt: 1700000500,
+          cwd: "/tmp/project",
+          source: "codex",
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    readThreadResolver = (targetThreadId: string) => ({
+      ok: true,
+      thread: buildConversationStateFixture(targetThreadId, "gpt-old-codex", {
+        updatedAt: 1700000000,
+      }),
+    });
+
+    liveStateResolver = (targetThreadId: string, _provider: ProviderId) => ({
+      kind: "readLiveState",
+      threadId: targetThreadId,
+      ownerClientId: "client-1",
+      conversationState: buildConversationStateFixture(
+        targetThreadId,
+        "gpt-old-codex",
+        {
+          updatedAt: 1700000500,
+        },
+      ),
+      liveStateError: {
+        kind: "reductionFailed",
+        message: "failed to reduce",
+        eventIndex: 4,
+        patchIndex: 1,
+      },
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("Live updates failed for this thread."),
+    ).toBeTruthy();
+    expect(await screen.findByText("Thinking…")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Stop" })).toBeTruthy();
+  });
+
+  it("keeps the sidebar live indicator when live reduction fails", async () => {
+    const threadId = "thread-live-error-sidebar-indicator";
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: threadId,
+          provider: "codex",
+          preview: "thread preview",
+          isGenerating: true,
+          createdAt: 1700000000,
+          updatedAt: 1700000500,
+          cwd: "/tmp/project",
+          source: "codex",
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    readThreadResolver = (targetThreadId: string) => ({
+      ok: true,
+      thread: buildConversationStateFixture(targetThreadId, "gpt-old-codex", {
+        updatedAt: 1700000000,
+      }),
+    });
+
+    liveStateResolver = (targetThreadId: string, _provider: ProviderId) => ({
+      kind: "readLiveState",
+      threadId: targetThreadId,
+      ownerClientId: "client-1",
+      conversationState: buildConversationStateFixture(
+        targetThreadId,
+        "gpt-old-codex",
+        {
+          updatedAt: 1700000500,
+        },
+      ),
+      liveStateError: {
+        kind: "reductionFailed",
+        message: "failed to reduce",
+        eventIndex: 0,
+        patchIndex: null,
+      },
+    });
+
+    render(<App />);
+
+    expect(
+      await screen.findByText("Live updates failed for this thread."),
+    ).toBeTruthy();
+    expect(document.querySelector(".animate-spin")).toBeTruthy();
+  });
+
+  it("stacks consecutive command and file change operations into one activity group", async () => {
+    const threadId = "thread-stacked-tool-activity";
+
+    threadsFixture = {
+      ok: true,
+      data: [
+        {
+          id: threadId,
+          provider: "codex",
+          preview: "thread preview",
+          createdAt: 1700000000,
+          updatedAt: 1700000500,
+          cwd: "/tmp/project",
+          source: "codex",
+        },
+      ],
+      cursors: {
+        codex: null,
+        opencode: null,
+      },
+      errors: {
+        codex: null,
+        opencode: null,
+      },
+    };
+
+    readThreadResolver = (targetThreadId: string) => ({
+      ok: true,
+      thread: buildConversationStateFixture(targetThreadId, "gpt-5.3-codex", {
+        updatedAt: 1700000500,
+        turnItems: [
+          {
+            id: "command-1",
+            type: "commandExecution",
+            command: "git status --short",
+            status: "completed",
+            aggregatedOutput: " M apps/web/src/App.tsx",
+            exitCode: 0,
+            durationMs: 44,
+          },
+          {
+            id: "file-change-1",
+            type: "fileChange",
+            status: "completed",
+            changes: [
+              {
+                path: "/tmp/project/apps/web/src/App.tsx",
+                kind: {
+                  type: "update",
+                },
+                diff: "@@ -1 +1 @@\n-old\n+new\n",
+              },
+            ],
+          },
+        ],
+      }),
+    });
+
+    liveStateResolver = (targetThreadId: string, _provider: ProviderId) => ({
+      kind: "readLiveState",
+      threadId: targetThreadId,
+      ownerClientId: null,
+      conversationState: null,
+      liveStateError: null,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText("Activity")).toBeTruthy();
+    expect(await screen.findByText("1 command run")).toBeTruthy();
+    expect(await screen.findByText("1 file change")).toBeTruthy();
+    expect(screen.queryByText("git status --short")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: /activity/i }));
+
+    expect(await screen.findByText("git status --short")).toBeTruthy();
+    expect(await screen.findByText("App.tsx")).toBeTruthy();
   });
 
   it("does not duplicate items when read and live contain the same content with different item ids", async () => {

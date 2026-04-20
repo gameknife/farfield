@@ -21,7 +21,9 @@ type CodexAgentAdapterTestAccess = CodexAgentAdapter & {
     string,
     "stream" | "readThreadWithTurns" | "readThread"
   >;
+  lastKnownOwnerClientId: string | null;
   ensureThreadLoaded: (threadId: string) => Promise<void>;
+  resetLiveSessionState: () => void;
   setThreadOwnerClientId: (threadId: string, ownerClientId: string) => void;
   service: {
     setCollaborationMode: (
@@ -189,5 +191,132 @@ describe("CodexAgentAdapter.setCollaborationMode", () => {
     expect(state.liveStateError).toBeNull();
     expect(state.conversationState?.title).toBe("after");
     expect(state.ownerClientId).toBe("owner-live");
+  });
+
+  it("ignores malformed older stream events when a newer snapshot exists", async () => {
+    const adapter = createAdapter();
+    const threadId = "thread-live-state-with-stale-invalid-event";
+
+    adapter.streamSnapshotByThreadId.set(threadId, {
+      id: threadId,
+      turns: [],
+      requests: [],
+      title: "before",
+    });
+    adapter.streamSnapshotOriginByThreadId.set(threadId, "stream");
+    adapter.streamEventsByThreadId.set(threadId, [
+      {
+        type: "broadcast",
+        method: "thread-stream-state-changed",
+        sourceClientId: "owner-live",
+        version: 1,
+        params: {
+          conversationId: threadId,
+          type: "thread-stream-state-changed",
+          version: 1,
+          change: {
+            type: "patches",
+          },
+        },
+      },
+      {
+        type: "broadcast",
+        method: "thread-stream-state-changed",
+        sourceClientId: "owner-live",
+        version: 1,
+        params: {
+          conversationId: threadId,
+          type: "thread-stream-state-changed",
+          version: 1,
+          change: {
+            type: "snapshot",
+            conversationState: {
+              id: threadId,
+              turns: [],
+              requests: [],
+              title: "after-snapshot",
+            },
+          },
+        },
+      },
+      {
+        type: "broadcast",
+        method: "thread-stream-state-changed",
+        sourceClientId: "owner-live",
+        version: 1,
+        params: {
+          conversationId: threadId,
+          type: "thread-stream-state-changed",
+          version: 1,
+          change: {
+            type: "patches",
+            patches: [
+              {
+                op: "replace",
+                path: ["title"],
+                value: "after-patch",
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    const state = await adapter.readLiveState(threadId);
+
+    expect(state.liveStateError).toBeNull();
+    expect(state.conversationState?.title).toBe("after-patch");
+    expect(state.ownerClientId).toBe("owner-live");
+  });
+
+  it("clears stale live session caches when the ipc session resets", async () => {
+    const adapter = createAdapter();
+    const threadId = "thread-stale-live-session";
+
+    adapter.threadOwnerById.set(threadId, "owner-stale");
+    adapter.lastKnownOwnerClientId = "owner-stale";
+    adapter.streamSnapshotByThreadId.set(threadId, {
+      id: threadId,
+      turns: [],
+      requests: [],
+      title: "stale-title",
+    });
+    adapter.streamSnapshotOriginByThreadId.set(threadId, "stream");
+    adapter.streamEventsByThreadId.set(threadId, [
+      {
+        type: "broadcast",
+        method: "thread-stream-state-changed",
+        sourceClientId: "owner-stale",
+        version: 1,
+        params: {
+          conversationId: threadId,
+          type: "thread-stream-state-changed",
+          version: 1,
+          change: {
+            type: "patches",
+            patches: [
+              {
+                op: "replace",
+                path: ["title"],
+                value: "broken",
+              },
+            ],
+          },
+        },
+      },
+    ]);
+
+    adapter.resetLiveSessionState();
+
+    expect(adapter.threadOwnerById.size).toBe(0);
+    expect(adapter.streamSnapshotByThreadId.size).toBe(0);
+    expect(adapter.streamSnapshotOriginByThreadId.size).toBe(0);
+    expect(adapter.streamEventsByThreadId.size).toBe(0);
+    expect(adapter.lastKnownOwnerClientId).toBeNull();
+
+    const state = await adapter.readLiveState(threadId);
+    expect(state.ownerClientId).toBeNull();
+    expect(state.conversationState).toBeNull();
+    expect(state.liveStateError).toBeNull();
   });
 });

@@ -157,6 +157,7 @@ export class CodexAgentAdapter implements AgentAdapter {
       });
 
       if (!state.connected) {
+        this.resetLiveSessionState();
         this.scheduleIpcReconnect();
       } else if (this.reconnectTimer) {
         clearTimeout(this.reconnectTimer);
@@ -790,22 +791,37 @@ export class CodexAgentAdapter implements AgentAdapter {
       };
     }
 
+    let reductionStartIndex = 0;
+    for (let eventIndex = threadStreamEvents.length - 1; eventIndex >= 0; eventIndex -= 1) {
+      const event = threadStreamEvents[eventIndex];
+      try {
+        const parsedEvent = parseThreadStreamStateChangedBroadcast(event);
+        if (parsedEvent.params.change.type === "snapshot") {
+          reductionStartIndex = eventIndex;
+          break;
+        }
+      } catch {
+        continue;
+      }
+    }
+
     const events: ReturnType<typeof parseThreadStreamStateChangedBroadcast>[] =
       [];
+    const reductionWindowEvents = threadStreamEvents.slice(reductionStartIndex);
 
     for (
       let eventIndex = 0;
-      eventIndex < threadStreamEvents.length;
+      eventIndex < reductionWindowEvents.length;
       eventIndex += 1
     ) {
-      const event = threadStreamEvents[eventIndex];
+      const event = reductionWindowEvents[eventIndex];
       try {
         events.push(parseThreadStreamStateChangedBroadcast(event));
       } catch (error) {
         logger.error(
           {
             threadId,
-            eventIndex,
+            eventIndex: reductionStartIndex + eventIndex,
             error: toErrorMessage(error),
             ...(error instanceof ProtocolValidationError
               ? { issues: error.issues }
@@ -819,7 +835,7 @@ export class CodexAgentAdapter implements AgentAdapter {
           liveStateError: {
             kind: "parseFailed",
             message: toErrorMessage(error),
-            eventIndex,
+            eventIndex: reductionStartIndex + eventIndex,
             patchIndex: null,
           },
         };
@@ -1030,6 +1046,14 @@ export class CodexAgentAdapter implements AgentAdapter {
       this.reconnectTimer = null;
       void this.bootstrapConnections();
     }, this.reconnectDelayMs);
+  }
+
+  private resetLiveSessionState(): void {
+    this.threadOwnerById.clear();
+    this.streamEventsByThreadId.clear();
+    this.streamSnapshotByThreadId.clear();
+    this.streamSnapshotOriginByThreadId.clear();
+    this.lastKnownOwnerClientId = null;
   }
 
   private async runAppServerCall<T>(operation: () => Promise<T>): Promise<T> {

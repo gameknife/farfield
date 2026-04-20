@@ -1,15 +1,24 @@
 import { memo, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronRight, FileSearch, Globe, Loader2 } from "lucide-react";
+import {
+  ChevronRight,
+  FileEdit,
+  FileSearch,
+  Globe,
+  Loader2,
+  Search,
+  Terminal,
+} from "lucide-react";
 import type { UnifiedItem } from "@farfield/unified-surface";
 import { Button } from "@/components/ui/button";
 import { CommandBlock } from "./CommandBlock";
+import { DiffBlock } from "./DiffBlock";
 import { WebSearchBlock } from "./WebSearchBlock";
 import { toolBlockSpacingClass } from "./conversation-tool-layout";
 
 export type ExplorationGroupItem = Extract<
   UnifiedItem,
-  { type: "commandExecution" | "webSearch" }
+  { type: "commandExecution" | "fileChange" | "webSearch" }
 >;
 
 interface ExplorationGroupBlockProps {
@@ -22,6 +31,8 @@ interface ExplorationGroupBlockProps {
 interface ExplorationSummary {
   codeSearches: number;
   fileReads: number;
+  fileChanges: number;
+  commandRuns: number;
   webSearches: number;
 }
 
@@ -34,6 +45,8 @@ function summarizeExplorationItems(
 ): ExplorationSummary {
   let codeSearches = 0;
   let fileReads = 0;
+  let fileChanges = 0;
+  let commandRuns = 0;
   let webSearches = 0;
 
   for (const item of items) {
@@ -42,23 +55,45 @@ function summarizeExplorationItems(
       continue;
     }
 
+    if (item.type === "fileChange") {
+      fileChanges += Math.max(item.changes.length, 1);
+      continue;
+    }
+
+    let hasRecognizedAction = false;
+    let hasUnrecognizedAction = false;
     for (const action of item.commandActions ?? []) {
       switch (action.type) {
         case "search":
           codeSearches += 1;
+          hasRecognizedAction = true;
           break;
         case "read":
         case "readFile":
         case "listFiles":
           fileReads += 1;
+          hasRecognizedAction = true;
           break;
+        case "write":
+        case "writeFile":
+          fileChanges += 1;
+          hasRecognizedAction = true;
+          break;
+        default:
+          hasUnrecognizedAction = true;
       }
+    }
+
+    if (!hasRecognizedAction || hasUnrecognizedAction) {
+      commandRuns += 1;
     }
   }
 
   return {
     codeSearches,
     fileReads,
+    fileChanges,
+    commandRuns,
     webSearches,
   };
 }
@@ -74,6 +109,14 @@ function buildSummaryLabels(summary: ExplorationSummary): string[] {
 
   if (summary.fileReads > 0) {
     labels.push(pluralize(summary.fileReads, "file read", "file reads"));
+  }
+
+  if (summary.fileChanges > 0) {
+    labels.push(pluralize(summary.fileChanges, "file change", "file changes"));
+  }
+
+  if (summary.commandRuns > 0) {
+    labels.push(pluralize(summary.commandRuns, "command run", "command runs"));
   }
 
   if (summary.webSearches > 0) {
@@ -106,7 +149,7 @@ function ExplorationGroupBlockComponent({
           <div className="min-w-0">
             <div className="flex items-center gap-2 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
               <FileSearch size={11} className="shrink-0" />
-              <span>Exploration</span>
+              <span>Activity</span>
             </div>
             <div className="mt-1 flex flex-wrap gap-1.5">
               {summaryLabels.map((label) => (
@@ -116,6 +159,12 @@ function ExplorationGroupBlockComponent({
                 >
                   {label.includes("web") ? (
                     <Globe size={10} className="text-muted-foreground/70" />
+                  ) : label.includes("code search") ? (
+                    <Search size={10} className="text-muted-foreground/70" />
+                  ) : label.includes("command run") ? (
+                    <Terminal size={10} className="text-muted-foreground/70" />
+                  ) : label.includes("file change") ? (
+                    <FileEdit size={10} className="text-muted-foreground/70" />
                   ) : (
                     <FileSearch
                       size={10}
@@ -125,7 +174,7 @@ function ExplorationGroupBlockComponent({
                   <span>{label}</span>
                 </span>
               ))}
-              {summaryLabels.length === 0 && (
+                  {summaryLabels.length === 0 && (
                 <span className="inline-flex rounded-full border border-border/70 bg-background/75 px-2 py-0.5 text-[11px] text-foreground/85">
                   {pluralize(items.length, "step", "steps")}
                 </span>
@@ -155,7 +204,7 @@ function ExplorationGroupBlockComponent({
               transition={{ duration: 0.24, ease: [0.16, 1, 0.3, 1] }}
               className="overflow-hidden"
             >
-              <div className="border-t border-border bg-background/50 px-3 py-3 space-y-2">
+            <div className="border-t border-border bg-background/50 px-3 py-3 space-y-2">
                 {items.map((item) => {
                   if (item.type === "commandExecution") {
                     return (
@@ -165,6 +214,10 @@ function ExplorationGroupBlockComponent({
                         isActive={item.status === "inProgress"}
                       />
                     );
+                  }
+
+                  if (item.type === "fileChange") {
+                    return <DiffBlock key={item.id} changes={item.changes} />;
                   }
 
                   return <WebSearchBlock key={item.id} item={item} />;

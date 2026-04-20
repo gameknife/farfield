@@ -518,31 +518,13 @@ function shouldRenderConversationItem(item: ConversationTurnItem): boolean {
   }
 }
 
-function isExplorationCommandActionType(type: string): boolean {
-  return (
-    type === "search" ||
-    type === "read" ||
-    type === "readFile" ||
-    type === "listFiles"
-  );
-}
-
 function isExplorationGroupableItem(
   item: ConversationTurnItem,
 ): item is ExplorationGroupItem {
-  if (item.type === "webSearch") {
-    return true;
-  }
-
-  if (item.type !== "commandExecution") {
-    return false;
-  }
-
-  const actions = item.commandActions;
   return (
-    actions !== undefined &&
-    actions.length > 0 &&
-    actions.every((action) => isExplorationCommandActionType(action.type))
+    item.type === "webSearch" ||
+    item.type === "commandExecution" ||
+    item.type === "fileChange"
   );
 }
 
@@ -1407,6 +1389,7 @@ export function App(): React.JSX.Element {
     refreshHistory: false,
     refreshSelectedThread: false,
   });
+  const selectedThreadHasLiveStateErrorRef = useRef(false);
   const shouldAutoRefreshSelectedThreadRef = useRef(false);
   const coreRefreshIntervalRef = useRef<number | null>(null);
   const selectedThreadRefreshIntervalRef = useRef<number | null>(null);
@@ -1696,9 +1679,11 @@ export function App(): React.JSX.Element {
   const shouldAutoRefreshSelectedThread = useMemo(
     () =>
       isThreadGeneratingState(conversationState) ||
+      selectedThread?.isGenerating === true ||
+      (liveStateStreamError !== null && Boolean(selectedThread?.isGenerating)) ||
       selectedThreadWaitingState?.waitingOnApproval === true ||
       selectedThreadWaitingState?.waitingOnUserInput === true,
-    [conversationState, selectedThreadWaitingState],
+    [conversationState, liveStateStreamError, selectedThread?.isGenerating, selectedThreadWaitingState],
   );
 
   const resolvedSelectedThreadProvider = useMemo((): AgentId | null => {
@@ -1876,7 +1861,10 @@ export function App(): React.JSX.Element {
     (!hasSelectedThreadCachedView || selectedThreadLoadStatusText !== null);
   const lastTurn = turns[turns.length - 1];
   const isGenerating = isTurnInProgressStatus(lastTurn?.status);
-  const canUseComposer = isGenerating
+  const isSelectedThreadGenerating =
+    isGenerating ||
+    (liveStateStreamError !== null && Boolean(selectedThread?.isGenerating));
+  const canUseComposer = isSelectedThreadGenerating
     ? canInterruptForActiveAgent
     : selectedThreadId
       ? hasResolvedSelectedThreadProvider && canSendMessageForActiveAgent
@@ -2190,6 +2178,28 @@ export function App(): React.JSX.Element {
         incomingThreads,
         previousThreads,
       );
+      const selectedThreadId = selectedThreadIdRef.current;
+      if (selectedThreadId && selectedThreadHasLiveStateErrorRef.current) {
+        const previousSelectedThread = previousThreads.find(
+          (thread) => thread.id === selectedThreadId,
+        );
+        const nextSelectedThreadIndex = nextThreads.findIndex(
+          (thread) => thread.id === selectedThreadId,
+        );
+        if (
+          previousSelectedThread?.isGenerating === true &&
+          nextSelectedThreadIndex >= 0 &&
+          nextThreads[nextSelectedThreadIndex]?.isGenerating !== true
+        ) {
+          const nextSelectedThread = nextThreads[nextSelectedThreadIndex];
+          if (nextSelectedThread) {
+            nextThreads[nextSelectedThreadIndex] = {
+              ...nextSelectedThread,
+              isGenerating: true,
+            };
+          }
+        }
+      }
       const existingIds = new Set(nextThreads.map((thread) => thread.id));
       for (const thread of previousThreads) {
         if (existingIds.has(thread.id)) {
@@ -2588,7 +2598,7 @@ export function App(): React.JSX.Element {
       try {
         startTransition(() => {
           setThreads((previousThreads) => {
-            const nextIsGenerating = live.conversationState
+            const reducedIsGenerating = live.conversationState
               ? isThreadGeneratingState(live.conversationState)
               : isThreadGeneratingState(read.thread);
             const nextThreads = previousThreads.map((threadSummary) => {
@@ -2596,6 +2606,10 @@ export function App(): React.JSX.Element {
                 return threadSummary;
               }
 
+              const nextIsGenerating =
+                live.liveStateError !== null
+                  ? (threadSummary.isGenerating ?? reducedIsGenerating)
+                  : reducedIsGenerating;
               const nextUpdatedAt =
                 typeof read.thread.updatedAt === "number"
                   ? Math.max(threadSummary.updatedAt, read.thread.updatedAt)
@@ -2839,6 +2853,10 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     activeTabRef.current = activeTab;
   }, [activeTab]);
+
+  useEffect(() => {
+    selectedThreadHasLiveStateErrorRef.current = liveStateStreamError !== null;
+  }, [liveStateStreamError]);
 
   useEffect(() => {
     shouldAutoRefreshSelectedThreadRef.current = shouldAutoRefreshSelectedThread;
@@ -4378,7 +4396,7 @@ export function App(): React.JSX.Element {
                         const isSelected = thread.id === selectedThreadId;
                         const threadIsGenerating =
                           Boolean(thread.isGenerating) ||
-                          (isSelected && isGenerating);
+                          (isSelected && isSelectedThreadGenerating);
                         const waitingOnApproval =
                           isSelected && selectedThreadWaitingState
                             ? selectedThreadWaitingState.waitingOnApproval
@@ -5002,7 +5020,7 @@ export function App(): React.JSX.Element {
                           className="flex flex-col gap-2"
                         >
                           <AnimatePresence initial={false}>
-                            {isGenerating && (
+                            {isSelectedThreadGenerating && (
                               <motion.div
                                 initial={{ opacity: 0, y: 4 }}
                                 animate={{ opacity: 1, height: "auto" }}
@@ -5020,7 +5038,7 @@ export function App(): React.JSX.Element {
                           <ChatComposer
                             canSend={canUseComposer}
                             isBusy={isBusy}
-                            isGenerating={isGenerating}
+                            isGenerating={isSelectedThreadGenerating}
                             placeholder={
                               selectedThreadId
                                 ? `Message ${activeAgentLabel}…`
