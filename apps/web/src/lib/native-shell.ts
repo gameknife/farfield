@@ -1,10 +1,20 @@
 import { z } from "zod";
 
+function normalizeSharedSecret(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\p{White_Space}\p{Cf}]+/gu, "");
+}
+
 const SharedSecretSchema = z
   .string()
-  .trim()
-  .min(1, "Shared secret is required")
-  .max(512, "Shared secret must be at most 512 characters");
+  .transform(normalizeSharedSecret)
+  .pipe(
+    z
+      .string()
+      .min(1, "Shared secret is required")
+      .max(512, "Shared secret must be at most 512 characters"),
+  );
 
 const ServerBaseUrlSchema = z
   .string()
@@ -47,6 +57,7 @@ export const NativeRuntimeStatusSchema = z
     activeMode: z.enum(["unconfigured", "host", "remoteClient"]),
     hostSupported: z.boolean(),
     nativeAppUrl: z.string().url(),
+    localConnectUrls: z.array(z.string().url()),
     resolvedBindAddress: z.string(),
     server4311Status: NativeRuntimeServiceStatusSchema,
     web4312Status: NativeRuntimeServiceStatusSchema,
@@ -73,7 +84,9 @@ declare global {
 }
 
 function isTauriRuntime(): boolean {
-  return typeof window !== "undefined" && window.__TAURI_INTERNALS__ !== undefined;
+  return (
+    typeof window !== "undefined" && window.__TAURI_INTERNALS__ !== undefined
+  );
 }
 
 async function invokeTauriCommand<Result>(
@@ -89,7 +102,9 @@ async function invokeTauriCommand<Result>(
 }
 
 export async function loadNativeBootstrap(): Promise<NativeBootstrap | null> {
-  const result = await invokeTauriCommand<NativeBootstrap>("farfield_get_bootstrap");
+  const result = await invokeTauriCommand<NativeBootstrap>(
+    "farfield_get_bootstrap",
+  );
   if (result === null) {
     return null;
   }
@@ -102,7 +117,9 @@ export async function saveNativeConnectionConfig(
   const result = await invokeTauriCommand<NativeConnectionConfig>(
     "farfield_set_connection_config",
     {
-      configJson: JSON.stringify(NativeConnectionConfigSchema.parse(connection)),
+      configJson: JSON.stringify(
+        NativeConnectionConfigSchema.parse(connection),
+      ),
     },
   );
 
@@ -114,7 +131,9 @@ export async function saveNativeConnectionConfig(
 }
 
 export async function activateNativeHostMode(): Promise<NativeBootstrap | null> {
-  const result = await invokeTauriCommand<NativeBootstrap>("farfield_activate_host_mode");
+  const result = await invokeTauriCommand<NativeBootstrap>(
+    "farfield_activate_host_mode",
+  );
   if (result === null) {
     return null;
   }
@@ -122,7 +141,9 @@ export async function activateNativeHostMode(): Promise<NativeBootstrap | null> 
 }
 
 export async function getNativeRuntimeStatus(): Promise<NativeRuntimeStatus | null> {
-  const result = await invokeTauriCommand<NativeRuntimeStatus>("farfield_get_runtime_status");
+  const result = await invokeTauriCommand<NativeRuntimeStatus>(
+    "farfield_get_runtime_status",
+  );
   if (result === null) {
     return null;
   }

@@ -5,6 +5,12 @@ const DEFAULT_SERVER_PORT = 4311;
 
 const ServerProtocolSchema = z.enum(["http:", "https:"]);
 
+function normalizeSharedSecret(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\p{White_Space}\p{Cf}]+/gu, "");
+}
+
 const ServerBaseUrlSchema = z
   .string()
   .trim()
@@ -50,9 +56,13 @@ const ServerBaseUrlSchema = z
 
 const SharedSecretSchema = z
   .string()
-  .trim()
-  .min(1, "Shared secret is required")
-  .max(512, "Shared secret must be at most 512 characters");
+  .transform(normalizeSharedSecret)
+  .pipe(
+    z
+      .string()
+      .min(1, "Shared secret is required")
+      .max(512, "Shared secret must be at most 512 characters"),
+  );
 
 const LegacyStoredServerTargetSchema = z
   .object({

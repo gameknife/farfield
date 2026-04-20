@@ -20,6 +20,7 @@ import { logger } from "./logger.js";
 import {
   isRequestAuthorized,
   resolveRemoteAuthConfig,
+  SHARED_SECRET_HEADER_NAME,
 } from "./auth.js";
 import {
   parseServerCliOptions,
@@ -154,7 +155,7 @@ function jsonResponse(
     "Content-Type": "application/json; charset=utf-8",
     "Content-Length": encoded.length,
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "authorization,content-type",
+    "Access-Control-Allow-Headers": `${SHARED_SECRET_HEADER_NAME},authorization,content-type`,
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
   });
   res.end(encoded);

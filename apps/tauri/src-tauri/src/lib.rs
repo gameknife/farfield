@@ -1,6 +1,9 @@
+use if_addrs::get_if_addrs;
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::BTreeSet,
     fs,
+    net::IpAddr,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::Mutex,
@@ -41,6 +44,7 @@ struct RuntimeStatus {
     active_mode: String,
     host_supported: bool,
     native_app_url: String,
+    local_connect_urls: Vec<String>,
     resolved_bind_address: String,
     server4311_status: RuntimeServiceStatus,
     web4312_status: RuntimeServiceStatus,
@@ -83,7 +87,44 @@ fn is_desktop_platform() -> bool {
 }
 
 fn generate_shared_secret() -> String {
-    format!("ff-{}", uuid::Uuid::new_v4().simple())
+    format!("{:06}", uuid::Uuid::new_v4().as_u128() % 1_000_000)
+}
+
+fn has_non_empty_shared_secret(shared_secret: &str) -> bool {
+    !shared_secret.trim().is_empty()
+}
+
+fn is_valid_host_shared_secret(shared_secret: &str) -> bool {
+    shared_secret.len() == 6 && shared_secret.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn build_local_connect_urls(addresses: impl IntoIterator<Item = IpAddr>) -> Vec<String> {
+    let mut urls = BTreeSet::from([HOST_SERVER_BASE_URL.to_string()]);
+
+    for address in addresses {
+        match address {
+            IpAddr::V4(ipv4)
+                if !ipv4.is_loopback() && !ipv4.is_link_local() && !ipv4.is_unspecified() =>
+            {
+                urls.insert(format!("http://{ipv4}:4311"));
+            }
+            _ => {}
+        }
+    }
+
+    urls.into_iter().collect()
+}
+
+fn local_connect_urls() -> Vec<String> {
+    let addresses = match get_if_addrs() {
+        Ok(interfaces) => interfaces
+            .into_iter()
+            .map(|interface| interface.ip())
+            .collect(),
+        Err(_) => Vec::new(),
+    };
+
+    build_local_connect_urls(addresses)
 }
 
 fn default_connection_config() -> ConnectionConfig {
@@ -118,8 +159,8 @@ fn validate_connection_config(config: &ConnectionConfig) -> Result<(), String> {
             if server_base_url != HOST_SERVER_BASE_URL {
                 return Err(format!("Host mode must use {HOST_SERVER_BASE_URL}"));
             }
-            if shared_secret.trim().is_empty() {
-                return Err("Shared secret is required".to_string());
+            if !is_valid_host_shared_secret(shared_secret) {
+                return Err("Host password must be exactly 6 digits".to_string());
             }
         }
         ConnectionConfig::RemoteClient {
@@ -131,7 +172,7 @@ fn validate_connection_config(config: &ConnectionConfig) -> Result<(), String> {
                 return Err("Unsupported connection config version".to_string());
             }
             validate_remote_server_base_url(server_base_url)?;
-            if shared_secret.trim().is_empty() {
+            if !has_non_empty_shared_secret(shared_secret) {
                 return Err("Shared secret is required".to_string());
             }
         }
@@ -221,11 +262,17 @@ fn build_runtime_status(connection: &ConnectionConfig, native_app_url: &str) -> 
             server_base_url, ..
         } => server_base_url.clone(),
     };
+    let local_connect_urls = if is_desktop_platform() {
+        local_connect_urls()
+    } else {
+        Vec::new()
+    };
 
     RuntimeStatus {
         active_mode: "unconfigured".to_string(),
         host_supported: is_desktop_platform(),
         native_app_url: native_app_url.to_string(),
+        local_connect_urls,
         resolved_bind_address,
         server4311_status: RuntimeServiceStatus {
             state: "stopped".to_string(),
@@ -247,6 +294,7 @@ fn build_active_runtime_status(
             active_mode: "host".to_string(),
             host_supported: is_desktop_platform(),
             native_app_url: native_app_url.to_string(),
+            local_connect_urls: local_connect_urls(),
             resolved_bind_address: "0.0.0.0:4311".to_string(),
             server4311_status: RuntimeServiceStatus {
                 state: "stopped".to_string(),
@@ -263,6 +311,7 @@ fn build_active_runtime_status(
             active_mode: "remoteClient".to_string(),
             host_supported: is_desktop_platform(),
             native_app_url: native_app_url.to_string(),
+            local_connect_urls: local_connect_urls(),
             resolved_bind_address: server_base_url.clone(),
             server4311_status: RuntimeServiceStatus {
                 state: "stopped".to_string(),
@@ -550,7 +599,12 @@ fn farfield_activate_host_mode(
         .expect("connection mutex poisoned")
         .clone();
     let shared_secret = match existing_connection {
-        ConnectionConfig::Host { shared_secret, .. } => shared_secret,
+        ConnectionConfig::Host { shared_secret, .. }
+            if is_valid_host_shared_secret(&shared_secret) =>
+        {
+            shared_secret
+        }
+        ConnectionConfig::Host { .. } => generate_shared_secret(),
         ConnectionConfig::RemoteClient { .. } => generate_shared_secret(),
     };
     let next_connection = ConnectionConfig::Host {
@@ -597,7 +651,11 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{native_app_url, validate_remote_server_base_url};
+    use super::{
+        build_local_connect_urls, generate_shared_secret, is_valid_host_shared_secret,
+        native_app_url, validate_remote_server_base_url,
+    };
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
     use url::Url;
 
     #[test]
@@ -612,6 +670,40 @@ mod tests {
     fn accepts_plain_lan_origin_for_remote_client_mode() {
         let result = validate_remote_server_base_url("http://192.168.1.25:4311");
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn host_shared_secret_is_six_digits() {
+        let shared_secret = generate_shared_secret();
+        assert_eq!(shared_secret.len(), 6);
+        assert!(shared_secret.bytes().all(|byte| byte.is_ascii_digit()));
+    }
+
+    #[test]
+    fn rejects_legacy_host_shared_secret_format() {
+        assert!(!is_valid_host_shared_secret(
+            "ff-bbfdbac7d8c54912b4426925d648cf00"
+        ));
+    }
+
+    #[test]
+    fn local_connect_urls_include_loopback_and_lan_ipv4_only() {
+        let urls = build_local_connect_urls([
+            IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            IpAddr::V4(Ipv4Addr::new(192, 168, 1, 23)),
+            IpAddr::V4(Ipv4Addr::new(10, 0, 0, 5)),
+            IpAddr::V4(Ipv4Addr::new(169, 254, 1, 9)),
+            IpAddr::V6(Ipv6Addr::LOCALHOST),
+        ]);
+
+        assert_eq!(
+            urls,
+            vec![
+                "http://10.0.0.5:4311".to_string(),
+                "http://127.0.0.1:4311".to_string(),
+                "http://192.168.1.23:4311".to_string(),
+            ]
+        );
     }
 
     #[test]

@@ -1114,12 +1114,12 @@ function NativeModeLanding({
             </div>
             <div className="mt-4 max-w-2xl space-y-2">
               <h1 className="text-3xl font-semibold tracking-tight text-foreground md:text-4xl">
-                Start this desktop as host or client.
+                Choose how this device connects.
               </h1>
               <p className="text-sm leading-6 text-muted-foreground">
                 {hostSupported
-                  ? "Host runs Codex on this machine. Client connects to another desktop over port 4311 with a shared secret."
-                  : "Connect to another desktop over port 4311 with a shared secret."}
+                  ? "Use host to keep Farfield on this computer and share it with other devices. Use client to connect to another Farfield host."
+                  : "Connect this device to another Farfield host with its address and 6-digit password."}
               </p>
             </div>
           </div>
@@ -1131,34 +1131,31 @@ function NativeModeLanding({
           >
             {hostSupported && (
               <div className="rounded-3xl border border-border bg-muted/30 p-5">
-              <div className="flex items-start gap-3">
-                <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-2xl bg-foreground text-background">
-                  <CircleDot size={18} />
-                </div>
-                <div className="min-w-0">
-                  <div className="text-base font-semibold text-foreground">
-                    Use As Host
+                <div className="flex items-start gap-3">
+                  <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-2xl bg-foreground text-background">
+                    <CircleDot size={18} />
                   </div>
-                  <div className="mt-1 text-sm leading-6 text-muted-foreground">
-                    Starts the local host services on this machine.
+                  <div className="min-w-0">
+                    <div className="text-base font-semibold text-foreground">
+                      Use As Host
+                    </div>
+                    <div className="mt-1 text-sm leading-6 text-muted-foreground">
+                      Keep Farfield on this computer and let your other devices
+                      connect to it.
+                    </div>
                   </div>
                 </div>
-              </div>
-              <div className="mt-5 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                <span className="rounded-full border border-border bg-background px-2.5 py-1">
-                  Starts 4311
-                </span>
-                <span className="rounded-full border border-border bg-background px-2.5 py-1">
-                  Starts 4312
-                </span>
-              </div>
-              <Button
-                type="button"
-                onClick={onActivateHost}
-                className="mt-6 h-10 rounded-full px-5 text-sm"
-              >
-                Use As Host
-              </Button>
+                <div className="mt-5 rounded-2xl border border-border bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
+                  You&apos;ll get a 6-digit password and a list of local
+                  addresses to use on phones and tablets.
+                </div>
+                <Button
+                  type="button"
+                  onClick={onActivateHost}
+                  className="mt-6 h-10 rounded-full px-5 text-sm"
+                >
+                  Use As Host
+                </Button>
               </div>
             )}
 
@@ -1172,65 +1169,67 @@ function NativeModeLanding({
                     Use As Client
                   </div>
                   <div className="mt-1 text-sm leading-6 text-muted-foreground">
-                    Connect to another desktop with its address and shared secret.
+                    Connect this device to another Farfield host with its
+                    address and password.
                   </div>
                 </div>
               </div>
-              <div className="mt-5 flex flex-wrap gap-2 text-[11px] text-muted-foreground">
-                <span className="rounded-full border border-border bg-background px-2.5 py-1">
-                  Local ports stay stopped
-                </span>
+              <div className="mt-5 rounded-2xl border border-border bg-background px-3 py-2 text-xs leading-5 text-muted-foreground">
+                Ideal for a second desktop or an Android device on the same
+                network.
               </div>
               <div className="mt-6 space-y-4">
-              <div className="space-y-1.5">
-                <Label className="text-sm font-medium">
-                  Host Server
-                </Label>
-                <Input
-                  value={serverBaseUrlDraft}
-                  onChange={(event) => onServerBaseUrlDraftChange(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      onConnectClient();
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-medium">Host Address</Label>
+                  <Input
+                    value={serverBaseUrlDraft}
+                    onChange={(event) =>
+                      onServerBaseUrlDraftChange(event.target.value)
                     }
-                  }}
-                  placeholder="http://192.168.1.23:4311"
-                  className="h-10 rounded-2xl bg-background text-sm"
-                />
-              </div>
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        onConnectClient();
+                      }
+                    }}
+                    placeholder="http://192.168.1.23:4311"
+                    className="h-10 rounded-2xl bg-background text-sm"
+                  />
+                </div>
 
-              <div className="space-y-1.5">
-                <Label className="text-sm font-medium">
-                  Shared Secret
-                </Label>
-                <Input
-                  value={sharedSecretDraft}
-                  onChange={(event) => onSharedSecretDraftChange(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter") {
-                      event.preventDefault();
-                      onConnectClient();
+                <div className="space-y-1.5">
+                  <Label className="text-sm font-medium">Password</Label>
+                  <Input
+                    value={sharedSecretDraft}
+                    onChange={(event) =>
+                      onSharedSecretDraftChange(event.target.value)
                     }
-                  }}
-                  placeholder="Paste the host secret"
-                  className="h-10 rounded-2xl bg-background text-sm"
-                  type="password"
-                />
-              </div>
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        event.preventDefault();
+                        onConnectClient();
+                      }
+                    }}
+                    placeholder="Enter the 6-digit password"
+                    className="h-10 rounded-2xl bg-background text-sm"
+                    type="password"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
+                  />
+                </div>
 
-              <Button
-                type="button"
-                onClick={onConnectClient}
-                disabled={
-                  serverBaseUrlDraft.trim().length === 0 ||
-                  sharedSecretDraft.trim().length === 0
-                }
-                className="h-10 w-full rounded-full text-sm"
-              >
-                Connect As Client
-              </Button>
-            </div>
+                <Button
+                  type="button"
+                  onClick={onConnectClient}
+                  disabled={
+                    serverBaseUrlDraft.trim().length === 0 ||
+                    sharedSecretDraft.trim().length === 0
+                  }
+                  className="h-10 w-full rounded-full text-sm"
+                >
+                  Connect As Client
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -4485,6 +4484,7 @@ export function App(): React.JSX.Element {
               <button
                 type="button"
                 onClick={() => setIsSettingsModalOpen(true)}
+                aria-label="Open settings"
                 className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/40 transition-colors cursor-pointer min-w-0 text-left"
               >
                 <span
@@ -5369,7 +5369,8 @@ export function App(): React.JSX.Element {
                 <div>
                   <div className="text-sm font-semibold">Settings</div>
                   <div className="text-xs text-muted-foreground">
-                    Choose whether this desktop acts as the host or connects to another host.
+                    Choose whether this device hosts Farfield or connects to
+                    another device.
                   </div>
                 </div>
                 <Button
@@ -5401,7 +5402,8 @@ export function App(): React.JSX.Element {
                       >
                         <div className="text-sm font-semibold">Use As Host</div>
                         <div className="mt-1 text-xs text-muted-foreground">
-                          Starts local 4311 and 4312. Codex runs on this machine, and clients connect to this machine&apos;s 4311.
+                          Keep Farfield on this computer and share it with other
+                          devices on your network.
                         </div>
                         {nativeRuntimeStatus?.activeMode === "host" && (
                           <div className="mt-2 text-[11px] font-medium text-foreground/80">
@@ -5419,7 +5421,8 @@ export function App(): React.JSX.Element {
                     >
                       <div className="text-sm font-semibold">Use As Client</div>
                       <div className="mt-1 text-xs text-muted-foreground">
-                        Does not start local 4311 or 4312. This window loads the packaged UI and connects directly to another machine&apos;s 4311.
+                        Connect this device to another Farfield host using its
+                        address and password.
                       </div>
                       {nativeRuntimeStatus?.activeMode === "remoteClient" && (
                         <div className="mt-2 text-[11px] font-medium text-foreground/80">
@@ -5433,21 +5436,48 @@ export function App(): React.JSX.Element {
                 {isNativeManagedConnection &&
                   nativeRuntimeStatus?.hostSupported &&
                   nativeRuntimeStatus?.activeMode === "host" && (
-                    <div className="space-y-1.5 rounded-xl border border-border bg-muted/25 p-3">
-                      <Label className="text-sm font-medium">Host Secret</Label>
-                      <div className="text-xs text-muted-foreground">
-                        Client mode must use this secret when connecting to this machine&apos;s 4311.
+                    <div className="space-y-3 rounded-xl border border-border bg-muted/25 p-3">
+                      <div className="space-y-1.5">
+                        <Label className="text-sm font-medium">
+                          6-digit Password
+                        </Label>
+                        <div className="text-xs text-muted-foreground">
+                          Enter this password on the device you want to connect.
+                        </div>
+                        <div className="rounded-lg bg-background px-3 py-3 text-center font-mono text-2xl font-semibold tracking-[0.35em] text-foreground">
+                          {sharedSecret}
+                        </div>
                       </div>
-                      <div className="break-all rounded-md bg-background px-2.5 py-2 font-mono text-xs">
-                        {sharedSecret}
+                      <div className="space-y-1.5">
+                        <Label className="text-sm font-medium">
+                          Connection Addresses
+                        </Label>
+                        <div className="text-xs text-muted-foreground">
+                          Use any of these addresses from another device on the
+                          same network.
+                        </div>
+                        <div className="space-y-2">
+                          {nativeRuntimeStatus.localConnectUrls.map(
+                            (connectUrl) => (
+                              <div
+                                key={connectUrl}
+                                className="rounded-lg border border-border bg-background px-3 py-2"
+                              >
+                                <div className="font-mono text-xs text-foreground">
+                                  {connectUrl}
+                                </div>
+                              </div>
+                            ),
+                          )}
+                        </div>
                       </div>
                     </div>
                   )}
 
                 <div className="space-y-1.5">
-                  <Label className="text-sm font-medium">Server</Label>
+                  <Label className="text-sm font-medium">Host Address</Label>
                   <div className="text-xs text-muted-foreground">
-                    Enter the other machine&apos;s Farfield server origin for client mode.
+                    Enter the address shown on the Farfield host device.
                   </div>
                   <Input
                     value={serverBaseUrlDraft}
@@ -5458,15 +5488,15 @@ export function App(): React.JSX.Element {
                         void saveServerTarget();
                       }
                     }}
-                    placeholder="https://your-vpn-server.example.com"
+                    placeholder="http://192.168.1.23:4311"
                     className="h-9 text-sm"
                   />
                 </div>
 
                 <div className="space-y-1.5">
-                  <Label className="text-sm font-medium">Shared Secret</Label>
+                  <Label className="text-sm font-medium">Password</Label>
                   <div className="text-xs text-muted-foreground">
-                    Required when this desktop connects to another machine&apos;s 4311.
+                    Enter the 6-digit password from the host device.
                   </div>
                   <Input
                     value={sharedSecretDraft}
@@ -5477,9 +5507,11 @@ export function App(): React.JSX.Element {
                         void saveServerTarget();
                       }
                     }}
-                    placeholder="Paste the host secret"
+                    placeholder="Enter the 6-digit password"
                     className="h-9 text-sm"
                     type="password"
+                    inputMode="numeric"
+                    autoComplete="one-time-code"
                   />
                 </div>
 
@@ -5513,40 +5545,21 @@ export function App(): React.JSX.Element {
                   )}
                 </div>
 
-                <div className="text-xs text-muted-foreground break-all">
-                  Active: {serverBaseUrl}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Secret: {sharedSecret.length > 0 ? "Configured" : "Not set"}
-                </div>
-                <div className="text-xs text-muted-foreground">
-                  Mode:{" "}
+                <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
                   {isNativeManagedConnection
                     ? nativeRuntimeStatus?.activeMode === "host"
-                      ? "Native host mode"
+                      ? "This device is ready to accept connections."
                       : nativeRuntimeStatus?.activeMode === "remoteClient"
-                        ? "Native remote-client mode"
-                        : "Native mode not activated"
+                        ? "This device connects to another Farfield host."
+                        : "Choose host or client to continue."
                     : hasSavedServerTarget
-                      ? "Saved server target"
-                      : "Automatic server target"}
+                      ? `Currently connecting to ${serverBaseUrl}.`
+                      : "This device will use the default local connection."}
                 </div>
-                {nativeRuntimeStatus && (
-                  <>
-                    <div className="text-xs text-muted-foreground">
-                      4311: {nativeRuntimeStatus.server4311Status.state}
-                    </div>
-                    <div className="text-xs text-muted-foreground">
-                      4312: {nativeRuntimeStatus.web4312Status.state}
-                    </div>
-                    <div className="text-xs text-muted-foreground break-all">
-                      Bind: {nativeRuntimeStatus.resolvedBindAddress}
-                    </div>
-                  </>
-                )}
                 {shouldShowNativeModePicker && (
                   <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-                    Choose host to run Codex on this machine, or choose client to connect to another desktop on your LAN over port 4311.
+                    Choose host to share this device, or choose client to
+                    connect to another Farfield host.
                   </div>
                 )}
               </div>

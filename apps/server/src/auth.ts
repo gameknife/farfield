@@ -2,11 +2,21 @@ import type { IncomingMessage } from "node:http";
 import { randomBytes } from "node:crypto";
 import { z } from "zod";
 
+function normalizeSharedSecret(value: string): string {
+  return value
+    .normalize("NFKC")
+    .replace(/[\p{White_Space}\p{Cf}]+/gu, "");
+}
+
 const SharedSecretSchema = z
   .string()
-  .trim()
-  .min(1, "Shared secret is required")
-  .max(512, "Shared secret must be at most 512 characters");
+  .transform(normalizeSharedSecret)
+  .pipe(
+    z
+      .string()
+      .min(1, "Shared secret is required")
+      .max(512, "Shared secret must be at most 512 characters"),
+  );
 
 const RemoteAuthConfigSchema = z
   .object({
@@ -16,6 +26,8 @@ const RemoteAuthConfigSchema = z
   .strict();
 
 export type RemoteAuthConfig = z.infer<typeof RemoteAuthConfigSchema>;
+
+export const SHARED_SECRET_HEADER_NAME = "x-farfield-shared-secret";
 
 function isLoopbackBindHost(host: string): boolean {
   return host === "127.0.0.1" || host === "::1" || host === "localhost";
@@ -53,9 +65,23 @@ export function parseBearerToken(
     return null;
   }
 
-  return SharedSecretSchema.safeParse(candidateToken).success
-    ? candidateToken.trim()
-    : null;
+  const parsedToken = SharedSecretSchema.safeParse(candidateToken);
+  return parsedToken.success ? parsedToken.data : null;
+}
+
+export function parseSharedSecretHeader(
+  sharedSecretHeader: string | string[] | undefined,
+): string | null {
+  if (Array.isArray(sharedSecretHeader)) {
+    return null;
+  }
+
+  if (typeof sharedSecretHeader !== "string") {
+    return null;
+  }
+
+  const parsedSecret = SharedSecretSchema.safeParse(sharedSecretHeader);
+  return parsedSecret.success ? parsedSecret.data : null;
 }
 
 export function resolveRemoteAuthConfig(
@@ -86,6 +112,7 @@ export function isRequestAuthorized(
   return isAuthorizedRequestContext(
     req.socket.remoteAddress,
     req.headers.authorization,
+    req.headers[SHARED_SECRET_HEADER_NAME],
     authConfig,
   );
 }
@@ -93,6 +120,7 @@ export function isRequestAuthorized(
 export function isAuthorizedRequestContext(
   remoteAddress: string | null | undefined,
   authorizationHeader: string | string[] | undefined,
+  sharedSecretHeader: string | string[] | undefined,
   authConfig: RemoteAuthConfig,
 ): boolean {
   if (isLoopbackRemoteAddress(remoteAddress)) {
@@ -103,6 +131,8 @@ export function isAuthorizedRequestContext(
     return true;
   }
 
-  const requestToken = parseBearerToken(authorizationHeader);
+  const requestToken =
+    parseSharedSecretHeader(sharedSecretHeader) ??
+    parseBearerToken(authorizationHeader);
   return requestToken === authConfig.sharedSecret;
 }

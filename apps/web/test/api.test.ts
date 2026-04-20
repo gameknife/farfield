@@ -49,6 +49,7 @@ describe("native connection config", () => {
         activeMode: "host",
         hostSupported: true,
         nativeAppUrl: "tauri://localhost/index.html",
+        localConnectUrls: ["http://127.0.0.1:4311", "http://192.168.1.25:4311"],
         resolvedBindAddress: "0.0.0.0:4311",
         server4311Status: {
           state: "running",
@@ -93,6 +94,7 @@ describe("native connection config", () => {
         activeMode: "remoteClient",
         hostSupported: true,
         nativeAppUrl: "tauri://localhost/index.html",
+        localConnectUrls: ["http://127.0.0.1:4311", "http://192.168.1.25:4311"],
         resolvedBindAddress: "0.0.0.0:4311",
         server4311Status: {
           state: "running",

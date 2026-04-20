@@ -67,6 +67,14 @@ describe("server target storage", () => {
     expect(() => parseSharedSecret("   ")).toThrowError(/Shared secret is required/);
   });
 
+  it("normalizes full-width digits in a shared secret", () => {
+    expect(parseSharedSecret("  ０１２３４５  ")).toBe("012345");
+  });
+
+  it("removes embedded spaces and zero-width characters in a shared secret", () => {
+    expect(parseSharedSecret("0 1\u200B2\u200C3 4 5")).toBe("012345");
+  });
+
   it("clears the stored target", () => {
     saveServerTarget({
       baseUrl: "http://192.168.1.22:4311",
