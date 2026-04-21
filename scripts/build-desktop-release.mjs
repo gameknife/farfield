@@ -87,6 +87,23 @@ if (currentPlatform === "macos") {
   console.log(
     `macOS bundles are under ${macBundleDir} and include ${archiveName}`,
   );
+} else if (currentPlatform === "linux") {
+  await runCommand(
+    "node",
+    [path.join(repoRoot, "scripts/prepare-windows-bundled-codex.mjs")],
+  );
+  await runCommand("bun", ["run", "--filter", "@farfield/web", "build"]);
+  await runCommand("bun", ["run", "--filter", "@farfield/tauri", "build:sidecars"]);
+  await runCommand(
+    "bunx",
+    ["tauri", "build", "--bundles", "deb", "rpm", "--ci"],
+    {
+      cwd: path.join(repoRoot, "apps/tauri"),
+    },
+  );
+  console.log(
+    `Desktop bundles are under ${path.join(repoRoot, "apps/tauri/src-tauri/target/release/bundle")}`,
+  );
 } else {
   await runCommand("bun", ["run", "--filter", "@farfield/tauri", "tauri:build"]);
   console.log(
