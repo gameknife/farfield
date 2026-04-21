@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { parseThreadStreamStateChangedBroadcast } from "@farfield/protocol";
-import { reduceThreadStreamEvents, ThreadStreamReductionError } from "../src/live-state.js";
+import { reduceThreadStreamEvents } from "../src/live-state.js";
 
 describe("live-state reducer", () => {
   it("applies snapshot then patches", () => {
@@ -138,7 +138,7 @@ describe("live-state reducer", () => {
     );
   });
 
-  it("throws reduction error with raw payload details when patch introduces invalid item type", () => {
+  it("normalizes unknown item types introduced by patches", () => {
     const snapshotEvent = parseThreadStreamStateChangedBroadcast({
       type: "broadcast",
       method: "thread-stream-state-changed",
@@ -195,19 +195,18 @@ describe("live-state reducer", () => {
       }
     });
 
-    let captured: unknown;
-    try {
-      reduceThreadStreamEvents([snapshotEvent, patchEvent]);
-    } catch (error) {
-      captured = error;
-    }
+    const state = reduceThreadStreamEvents([snapshotEvent, patchEvent]);
+    const thread = state.get("thread-3");
+    const item = thread?.conversationState?.turns[0]?.items[0];
 
-    expect(captured).toBeInstanceOf(ThreadStreamReductionError);
-    const reductionError = captured as ThreadStreamReductionError;
-    expect(reductionError.details.threadId).toBe("thread-3");
-    expect(reductionError.details.eventIndex).toBe(1);
-    expect(reductionError.details.patchIndex).toBe(0);
-    expect(reductionError.details.event.params.conversationId).toBe("thread-3");
-    expect(reductionError.details.patch.op).toBe("replace");
+    expect(item).toEqual({
+      id: "item-2",
+      type: "unknown",
+      originalType: "newUnknownItemType",
+      payload: {
+        id: "item-2",
+        type: "newUnknownItemType"
+      }
+    });
   });
 });
