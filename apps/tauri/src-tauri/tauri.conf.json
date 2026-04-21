@@ -29,8 +29,8 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "resources": [
-      "../../web/dist"
-    ]
+    "resources": {
+      "../../web/dist": "dist"
+    }
   }
 }

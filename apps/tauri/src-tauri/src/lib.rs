@@ -2,14 +2,19 @@ use if_addrs::get_if_addrs;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeSet,
-    fs,
+    fs::{self, OpenOptions},
+    io::{BufRead, BufReader, Read, Write},
     net::IpAddr,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{LazyLock, Mutex},
+    thread,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager, RunEvent, State};
 use url::Url;
+#[cfg(target_os = "windows")]
+use std::os::windows::process::CommandExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(
@@ -78,9 +83,18 @@ struct AppStateInner {
     children: Mutex<ManagedChildren>,
 }
 
+#[derive(Clone, Copy)]
+enum RuntimeServiceKind {
+    Server4311,
+    Web4312,
+}
+
 const HOST_SERVER_BASE_URL: &str = "http://127.0.0.1:4311";
 const HOST_WINDOW_URL: &str = "http://127.0.0.1:4312";
 const MODE_PICKER_DONE_HASH: &str = "#mode-chosen";
+static NATIVE_HOST_LOG_WRITE_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+#[cfg(target_os = "windows")]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 fn is_desktop_platform() -> bool {
     cfg!(target_os = "windows") || cfg!(target_os = "macos") || cfg!(target_os = "linux")
@@ -196,13 +210,57 @@ fn release_executable_dir() -> Result<PathBuf, String> {
     Ok(executable_dir.to_path_buf())
 }
 
-fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+fn app_config_dir(app: &AppHandle) -> Result<PathBuf, String> {
     let base_dir = app
         .path()
         .app_config_dir()
         .map_err(|error| error.to_string())?;
     fs::create_dir_all(&base_dir).map_err(|error| error.to_string())?;
+    Ok(base_dir)
+}
+
+fn app_config_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let base_dir = app_config_dir(app)?;
     Ok(base_dir.join("connection.json"))
+}
+
+fn native_host_log_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let base_dir = app_config_dir(app)?;
+    Ok(base_dir.join("native-host.log"))
+}
+
+fn append_native_host_log(app: &AppHandle, message: &str) -> Result<PathBuf, String> {
+    let log_path = native_host_log_path(app)?;
+    let _guard = NATIVE_HOST_LOG_WRITE_LOCK
+        .lock()
+        .expect("native host log mutex poisoned");
+    let mut log_file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|error| error.to_string())?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| error.to_string())?;
+    writeln!(
+        log_file,
+        "[{}.{:03}] {}",
+        now.as_secs(),
+        now.subsec_millis(),
+        message
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(log_path)
+}
+
+fn record_native_host_event(app: &AppHandle, message: impl AsRef<str>) {
+    let message_ref = message.as_ref();
+    if let Err(error) = append_native_host_log(app, message_ref) {
+        eprintln!(
+            "[farfield-native:log-write-failed] {} while recording {}",
+            error, message_ref
+        );
+    }
 }
 
 fn load_connection_config(app: &AppHandle) -> ConnectionConfig {
@@ -343,6 +401,25 @@ fn sidecar_binary_path(app: &AppHandle, binary_name: &str) -> Result<PathBuf, St
         .map_err(|error| error.to_string())
 }
 
+fn resolve_sidecar_binary_path(
+    app: &AppHandle,
+    binary_name: &str,
+) -> Result<PathBuf, String> {
+    record_native_host_event(app, format!("resolving sidecar binary {}", binary_name));
+    let resolved = sidecar_binary_path(app, binary_name);
+    match &resolved {
+        Ok(path) => record_native_host_event(
+            app,
+            format!("resolved sidecar binary {} to {}", binary_name, path.display()),
+        ),
+        Err(error) => record_native_host_event(
+            app,
+            format!("failed to resolve sidecar binary {}: {}", binary_name, error),
+        ),
+    }
+    resolved
+}
+
 fn sidecar_binary_name(base_name: &str) -> String {
     if cfg!(target_os = "windows") {
         format!("{base_name}.exe")
@@ -354,6 +431,11 @@ fn sidecar_binary_name(base_name: &str) -> String {
 fn packaged_web_dist_path(app: &AppHandle) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
         return Ok(repo_root().join("apps").join("web").join("dist"));
+    }
+
+    let executable_dist_path = release_executable_dir()?.join("dist");
+    if executable_dist_path.is_dir() {
+        return Ok(executable_dist_path);
     }
 
     let executable_layout_path = release_executable_dir()?.join("resources").join("dist");
@@ -377,12 +459,240 @@ fn packaged_web_dist_path(app: &AppHandle) -> Result<PathBuf, String> {
     Err("Packaged web dist directory is missing".to_string())
 }
 
+fn resolve_packaged_web_dist_path(app: &AppHandle) -> Result<PathBuf, String> {
+    record_native_host_event(app, "resolving packaged web dist directory");
+    let resolved = packaged_web_dist_path(app);
+    match &resolved {
+        Ok(path) => record_native_host_event(
+            app,
+            format!("resolved packaged web dist directory to {}", path.display()),
+        ),
+        Err(error) => record_native_host_event(
+            app,
+            format!("failed to resolve packaged web dist directory: {}", error),
+        ),
+    }
+    resolved
+}
+
 fn bun_binary_name() -> &'static str {
     if cfg!(target_os = "windows") {
         "bun.exe"
     } else {
         "bun"
     }
+}
+
+fn configure_child_process(command: &mut Command) {
+    #[cfg(target_os = "windows")]
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+fn runtime_service_status_mut<'a>(
+    runtime: &'a mut RuntimeStatus,
+    service_kind: RuntimeServiceKind,
+) -> &'a mut RuntimeServiceStatus {
+    match service_kind {
+        RuntimeServiceKind::Server4311 => &mut runtime.server4311_status,
+        RuntimeServiceKind::Web4312 => &mut runtime.web4312_status,
+    }
+}
+
+fn runtime_service_kind_label(service_kind: RuntimeServiceKind) -> &'static str {
+    match service_kind {
+        RuntimeServiceKind::Server4311 => "server4311",
+        RuntimeServiceKind::Web4312 => "web4312",
+    }
+}
+
+fn update_runtime_service_status(
+    app: &AppHandle,
+    service_kind: RuntimeServiceKind,
+    next_state: Option<&str>,
+    next_message: Option<String>,
+) {
+    let state = app.state::<AppStateInner>();
+    let mut runtime = state.runtime.lock().expect("runtime mutex poisoned");
+    let service_status = runtime_service_status_mut(&mut runtime, service_kind);
+    if let Some(state_value) = next_state {
+        service_status.state = state_value.to_string();
+    }
+    service_status.message = next_message;
+}
+
+fn spawn_runtime_service_log_reader<R: Read + Send + 'static>(
+    app: &AppHandle,
+    service_kind: RuntimeServiceKind,
+    stream_name: &'static str,
+    reader: R,
+    ready_pattern: Option<&'static str>,
+) {
+    let app_handle = app.clone();
+    thread::spawn(move || {
+        let buffered_reader = BufReader::new(reader);
+        for line_result in buffered_reader.lines() {
+            let line = match line_result {
+                Ok(value) => value.trim().to_string(),
+                Err(error) => {
+                    update_runtime_service_status(
+                        &app_handle,
+                        service_kind,
+                        None,
+                        Some(format!("{stream_name} read failed: {error}")),
+                    );
+                    break;
+                }
+            };
+
+            if line.is_empty() {
+                continue;
+            }
+
+            eprintln!(
+                "[farfield-native:{}:{}] {}",
+                runtime_service_kind_label(service_kind),
+                stream_name,
+                line
+            );
+            record_native_host_event(
+                &app_handle,
+                format!(
+                    "{} {}: {}",
+                    runtime_service_kind_label(service_kind),
+                    stream_name,
+                    line
+                ),
+            );
+
+            let next_state = ready_pattern
+                .filter(|pattern| line.contains(pattern))
+                .map(|_| "running");
+            update_runtime_service_status(
+                &app_handle,
+                service_kind,
+                next_state,
+                Some(format!("{stream_name}: {line}")),
+            );
+        }
+    });
+}
+
+fn spawn_runtime_service_exit_monitor(
+    app: &AppHandle,
+    service_kind: RuntimeServiceKind,
+    child_id: u32,
+) {
+    let app_handle = app.clone();
+    thread::spawn(move || loop {
+        let exit_message = {
+            let state = app_handle.state::<AppStateInner>();
+            let mut children = state.children.lock().expect("children mutex poisoned");
+            let child_option = match service_kind {
+                RuntimeServiceKind::Server4311 => &mut children.server,
+                RuntimeServiceKind::Web4312 => &mut children.web_host,
+            };
+
+            let child = match child_option.as_mut() {
+                Some(value) if value.id() == child_id => value,
+                _ => return,
+            };
+
+            match child.try_wait() {
+                Ok(Some(exit_status)) => {
+                    let exit_detail = match exit_status.code() {
+                        Some(code) => format!("exit code {code}"),
+                        None => "terminated without an exit code".to_string(),
+                    };
+                    *child_option = None;
+                    Some(format!(
+                        "{} process exited with {}",
+                        runtime_service_kind_label(service_kind),
+                        exit_detail
+                    ))
+                }
+                Ok(None) => None,
+                Err(error) => {
+                    *child_option = None;
+                    Some(format!(
+                        "{} process status check failed: {}",
+                        runtime_service_kind_label(service_kind),
+                        error
+                    ))
+                }
+            }
+        };
+
+        if let Some(message) = exit_message {
+            record_native_host_event(&app_handle, &message);
+            update_runtime_service_status(&app_handle, service_kind, Some("error"), Some(message));
+            return;
+        }
+
+        thread::sleep(Duration::from_millis(250));
+    });
+}
+
+fn spawn_managed_service(
+    app: &AppHandle,
+    service_kind: RuntimeServiceKind,
+    mut command: Command,
+    launch_message: String,
+    ready_pattern: Option<&'static str>,
+) -> Result<Child, String> {
+    record_native_host_event(app, &launch_message);
+    update_runtime_service_status(
+        app,
+        service_kind,
+        Some("starting"),
+        Some(launch_message.clone()),
+    );
+
+    configure_child_process(&mut command);
+    command.stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = match command.spawn() {
+        Ok(value) => value,
+        Err(error) => {
+            let message = format!("{launch_message}: {error}");
+            record_native_host_event(app, &message);
+            update_runtime_service_status(
+                app,
+                service_kind,
+                Some("error"),
+                Some(message.clone()),
+            );
+            return Err(message);
+        }
+    };
+
+    let child_id = child.id();
+    if let Some(stdout) = child.stdout.take() {
+        spawn_runtime_service_log_reader(app, service_kind, "stdout", stdout, ready_pattern);
+    }
+    if let Some(stderr) = child.stderr.take() {
+        spawn_runtime_service_log_reader(app, service_kind, "stderr", stderr, None);
+    }
+    spawn_runtime_service_exit_monitor(app, service_kind, child_id);
+    record_native_host_event(
+        app,
+        format!(
+            "{} started with pid {}",
+            runtime_service_kind_label(service_kind),
+            child_id
+        ),
+    );
+    let next_state = if ready_pattern.is_none() {
+        "running"
+    } else {
+        "starting"
+    };
+    update_runtime_service_status(
+        app,
+        service_kind,
+        Some(next_state),
+        Some(format!("{launch_message} (pid {child_id})")),
+    );
+
+    Ok(child)
 }
 
 fn stop_children(children: &mut ManagedChildren) {
@@ -409,7 +719,16 @@ fn start_desktop_host_children(
     connection: &ConnectionConfig,
     children: &mut ManagedChildren,
 ) -> Result<(), String> {
+    if let Ok(log_path) = native_host_log_path(app) {
+        record_native_host_event(
+            app,
+            format!("native host log file: {}", log_path.display()),
+        );
+    }
+    record_native_host_event(app, "starting desktop host children");
     stop_children(children);
+    update_runtime_service_status(app, RuntimeServiceKind::Server4311, Some("stopped"), None);
+    update_runtime_service_status(app, RuntimeServiceKind::Web4312, Some("stopped"), None);
 
     let shared_secret = match connection {
         ConnectionConfig::Host { shared_secret, .. } => shared_secret.clone(),
@@ -418,58 +737,123 @@ fn start_desktop_host_children(
 
     if cfg!(debug_assertions) {
         let workspace_root = repo_root();
-        let server_child = Command::new(bun_binary_name())
+        let web_dist_path = workspace_root.join("apps").join("web").join("dist");
+        record_native_host_event(
+            app,
+            format!(
+                "debug host mode using workspace_root={} web_dist_dir={}",
+                workspace_root.display(),
+                web_dist_path.display()
+            ),
+        );
+        let mut server_command = Command::new(bun_binary_name());
+        server_command
             .current_dir(&workspace_root)
             .env("HOST", "0.0.0.0")
             .env("PORT", "4311")
             .env("FARFIELD_SHARED_SECRET", &shared_secret)
-            .arg("apps/server/src/index.ts")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| error.to_string())?;
+            .arg("apps/server/src/index.ts");
+        let mut server_child = spawn_managed_service(
+            app,
+            RuntimeServiceKind::Server4311,
+            server_command,
+            format!(
+                "Launching local server with bun from {}",
+                workspace_root.display()
+            ),
+            None,
+        )?;
 
-        let web_host_child = Command::new(bun_binary_name())
+        let mut web_host_command = Command::new(bun_binary_name());
+        web_host_command
             .current_dir(&workspace_root)
             .env("HOST", "127.0.0.1")
             .env("PORT", "4312")
             .env("API_ORIGIN", "http://127.0.0.1:4311")
-            .env(
-                "WEB_DIST_DIR",
-                workspace_root.join("apps").join("web").join("dist"),
-            )
-            .arg("apps/web-host/src/index.ts")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|error| error.to_string())?;
+            .env("WEB_DIST_DIR", &web_dist_path)
+            .arg("apps/web-host/src/index.ts");
+        let web_host_child = match spawn_managed_service(
+            app,
+            RuntimeServiceKind::Web4312,
+            web_host_command,
+            format!(
+                "Launching local web host with bun from {} using WEB_DIST_DIR={}",
+                workspace_root.display(),
+                web_dist_path.display()
+            ),
+            Some("Farfield web-host listening on http://"),
+        ) {
+            Ok(value) => value,
+            Err(error) => {
+                record_native_host_event(
+                    app,
+                    format!("web4312 launch failed; stopping server4311: {error}"),
+                );
+                let _ = server_child.kill();
+                let _ = server_child.wait();
+                return Err(error);
+            }
+        };
 
         children.server = Some(server_child);
         children.web_host = Some(web_host_child);
         return Ok(());
     }
 
-    let server_path = sidecar_binary_path(app, &sidecar_binary_name("farfield-server"))?;
-    let web_host_path = sidecar_binary_path(app, &sidecar_binary_name("web-host"))?;
+    let server_path = resolve_sidecar_binary_path(app, &sidecar_binary_name("farfield-server"))?;
+    let web_host_path = resolve_sidecar_binary_path(app, &sidecar_binary_name("web-host"))?;
+    let web_dist_path = resolve_packaged_web_dist_path(app)?;
+    record_native_host_event(
+        app,
+        format!(
+            "release host mode using server_path={} web_host_path={} web_dist_dir={}",
+            server_path.display(),
+            web_host_path.display(),
+            web_dist_path.display()
+        ),
+    );
 
-    let server_child = Command::new(server_path)
+    let mut server_command = Command::new(&server_path);
+    server_command
         .env("HOST", "0.0.0.0")
         .env("PORT", "4311")
-        .env("FARFIELD_SHARED_SECRET", &shared_secret)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| error.to_string())?;
+        .env("FARFIELD_SHARED_SECRET", &shared_secret);
+    let mut server_child = spawn_managed_service(
+        app,
+        RuntimeServiceKind::Server4311,
+        server_command,
+        format!("Launching sidecar server from {}", server_path.display()),
+        None,
+    )?;
 
-    let web_host_child = Command::new(web_host_path)
+    let mut web_host_command = Command::new(&web_host_path);
+    web_host_command
         .env("HOST", "127.0.0.1")
         .env("PORT", "4312")
         .env("API_ORIGIN", "http://127.0.0.1:4311")
-        .env("WEB_DIST_DIR", packaged_web_dist_path(app)?)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|error| error.to_string())?;
+        .env("WEB_DIST_DIR", &web_dist_path);
+    let web_host_child = match spawn_managed_service(
+        app,
+        RuntimeServiceKind::Web4312,
+        web_host_command,
+        format!(
+            "Launching sidecar web host from {} using WEB_DIST_DIR={}",
+            web_host_path.display(),
+            web_dist_path.display()
+        ),
+        Some("Farfield web-host listening on http://"),
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            record_native_host_event(
+                app,
+                format!("web4312 launch failed; stopping server4311: {error}"),
+            );
+            let _ = server_child.kill();
+            let _ = server_child.wait();
+            return Err(error);
+        }
+    };
 
     children.server = Some(server_child);
     children.web_host = Some(web_host_child);
@@ -508,7 +892,16 @@ fn redirect_host_window(
             HOST_WINDOW_URL.to_string()
         };
         let script = format!("window.location.replace({target_url:?});");
-        let _ = window.eval(&script);
+        record_native_host_event(
+            app,
+            format!("redirecting host window to {}", target_url),
+        );
+        if let Err(error) = window.eval(&script) {
+            record_native_host_event(
+                app,
+                format!("host window redirect failed: {}", error),
+            );
+        }
     }
 }
 

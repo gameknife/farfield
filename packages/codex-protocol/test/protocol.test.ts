@@ -505,26 +505,26 @@ describe("codex-protocol schemas", () => {
   });
 
   it("rejects thread conversation state with unknown item types", () => {
-    expect(() =>
-      parseThreadConversationState({
-        id: "thread-123",
-        turns: [
-          {
-            status: "completed",
-            items: [
-              {
-                id: "item-unknown",
-                type: "toolCall",
-                payload: {
-                  hello: "world"
-                }
+    const parsed = parseThreadConversationState({
+      id: "thread-123",
+      turns: [
+        {
+          status: "completed",
+          items: [
+            {
+              id: "item-unknown",
+              type: "toolCall",
+              payload: {
+                hello: "world"
               }
-            ]
-          }
-        ],
-        requests: []
-      })
-    ).toThrowError(/ThreadConversationState did not match expected schema/);
+            }
+          ]
+        }
+      ],
+      requests: []
+    });
+
+    expect(parsed.turns[0]?.items[0]?.type).toBe("unknown");
   });
 
   it("parses thread conversation state with command execution item", () => {
@@ -828,6 +828,68 @@ describe("codex-protocol schemas", () => {
     expect(parsed.turns[0]?.items[0]?.type).toBe("forkedFromConversation");
   });
 
+  it("parses thread conversation state with dynamicToolCall item", () => {
+    const parsed = parseThreadConversationState({
+      id: "thread-123",
+      turns: [
+        {
+          status: "completed",
+          items: [
+            {
+              id: "item-dynamic-tool",
+              type: "dynamicToolCall",
+              tool: "search_repo",
+              arguments: {
+                query: "native host log"
+              },
+              status: "completed",
+              contentItems: [
+                {
+                  type: "inputText",
+                  text: "Found matching files"
+                }
+              ],
+              success: true,
+              durationMs: 42
+            }
+          ]
+        }
+      ],
+      requests: []
+    });
+
+    expect(parsed.turns[0]?.items[0]?.type).toBe("dynamicToolCall");
+  });
+
+  it("normalizes unknown thread items into unknown item schema", () => {
+    const parsed = parseThreadConversationState({
+      id: "thread-123",
+      turns: [
+        {
+          status: "completed",
+          items: [
+            {
+              id: "item-unknown",
+              type: "brandNewThreadItem",
+              extra: {
+                nested: true
+              }
+            }
+          ]
+        }
+      ],
+      requests: []
+    });
+
+    const firstItem = parsed.turns[0]?.items[0];
+    expect(firstItem?.type).toBe("unknown");
+    expect(
+      firstItem && firstItem.type === "unknown"
+        ? firstItem.originalType
+        : null
+    ).toBe("brandNewThreadItem");
+  });
+
   it("parses generic ipc request frames", () => {
     const parsed = parseIpcFrame({
       type: "request",
@@ -1024,6 +1086,52 @@ describe("codex-protocol schemas", () => {
     expect(parsed.thread.id).toBe("thread-123");
     expect(parsed.thread.requests).toEqual([]);
     expect(parsed.thread.turns[0]?.status).toBe("completed");
+  });
+
+  it("parses app-server thread/read response with dynamic and unknown items", () => {
+    const parsed = parseAppServerReadThreadResponse({
+      thread: {
+        id: "thread-123",
+        preview: "hello",
+        modelProvider: "openai",
+        createdAt: 1700000000,
+        updatedAt: 1700000000,
+        cwd: "/tmp/workspace",
+        source: "cli",
+        status: {
+          type: "idle"
+        },
+        path: "/tmp/thread.jsonl",
+        cliVersion: "0.1.0",
+        turns: [
+          {
+            id: "turn-1",
+            status: "completed",
+            items: [
+              {
+                id: "item-1",
+                type: "dynamicToolCall",
+                tool: "search_repo",
+                arguments: {
+                  query: "dynamicToolCall"
+                },
+                status: "completed",
+                contentItems: null,
+                success: true
+              },
+              {
+                id: "item-2",
+                type: "brandNewThreadItem",
+                extra: "value"
+              }
+            ]
+          }
+        ]
+      }
+    });
+
+    expect(parsed.thread.turns[0]?.items[0]?.type).toBe("dynamicToolCall");
+    expect(parsed.thread.turns[0]?.items[1]?.type).toBe("unknown");
   });
 
   it("parses app-server thread/start response", () => {

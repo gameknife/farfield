@@ -5,9 +5,11 @@ const TOOL_BLOCK_TYPES: readonly UnifiedItem["type"][] = [
   "fileChange",
   "webSearch",
   "mcpToolCall",
+  "dynamicToolCall",
   "collabAgentToolCall",
   "remoteTaskCreated",
   "forkedFromConversation",
+  "unknown",
 ];
 
 export function isToolBlockType(

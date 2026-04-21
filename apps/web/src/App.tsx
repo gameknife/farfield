@@ -65,6 +65,7 @@ import {
 } from "@/lib/api";
 import {
   activateNativeHostMode,
+  getNativeRuntimeStatus,
   loadNativeBootstrap,
   saveNativeConnectionConfig,
   type NativeRuntimeStatus,
@@ -226,6 +227,54 @@ interface MobileSidebarSwipeGesture {
   mode: "open" | "close";
   startX: number;
   startY: number;
+}
+
+function hasSameNativeRuntimeStatus(
+  current: NativeRuntimeStatus | null,
+  next: NativeRuntimeStatus,
+): boolean {
+  if (current === null) {
+    return false;
+  }
+
+  return (
+    current.activeMode === next.activeMode &&
+    current.hostSupported === next.hostSupported &&
+    current.nativeAppUrl === next.nativeAppUrl &&
+    current.resolvedBindAddress === next.resolvedBindAddress &&
+    current.localConnectUrls.length === next.localConnectUrls.length &&
+    current.localConnectUrls.every((value, index) => value === next.localConnectUrls[index]) &&
+    current.server4311Status.state === next.server4311Status.state &&
+    current.server4311Status.message === next.server4311Status.message &&
+    current.web4312Status.state === next.web4312Status.state &&
+    current.web4312Status.message === next.web4312Status.message
+  );
+}
+
+function NativeRuntimeServiceCard({
+  label,
+  status,
+}: {
+  label: string;
+  status: NativeRuntimeStatus["server4311Status"];
+}): React.JSX.Element {
+  const toneClassName =
+    status.state === "error"
+      ? "border-destructive/40 bg-destructive/10 text-destructive"
+      : status.state === "running"
+        ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-200"
+        : "border-border bg-background text-foreground";
+
+  return (
+    <div className={`rounded-lg border px-3 py-2 text-left ${toneClassName}`}>
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-[11px] font-medium uppercase tracking-[0.16em]">
+          {label}
+        </div>
+        <div className="font-mono text-[11px]">{status.state}</div>
+      </div>
+    </div>
+  );
 }
 
 /* ── Helpers ────────────────────────────────────────────────── */
@@ -504,7 +553,7 @@ function shouldRenderConversationItem(item: ConversationTurnItem): boolean {
     case "userMessage":
     case "steeringUserMessage":
       return item.content.some(
-        (part) => part.type === "text" && part.text.length > 0,
+        (part) => part.type !== "text" || part.text.length > 0,
       );
     case "agentMessage":
       return item.text.length > 0;
@@ -2122,6 +2171,41 @@ export function App(): React.JSX.Element {
     nativeRuntimeStatus?.activeMode,
     shouldRenderNativeModeLanding,
   ]);
+
+  useEffect(() => {
+    if (!isNativeManagedConnection) {
+      return;
+    }
+
+    let cancelled = false;
+    const refreshRuntimeStatus = async () => {
+      try {
+        const nextRuntimeStatus = await getNativeRuntimeStatus();
+        if (cancelled || nextRuntimeStatus === null) {
+          return;
+        }
+        setNativeRuntimeStatus((currentRuntimeStatus) =>
+          hasSameNativeRuntimeStatus(currentRuntimeStatus, nextRuntimeStatus)
+            ? currentRuntimeStatus
+            : nextRuntimeStatus,
+        );
+      } catch (error) {
+        if (!cancelled) {
+          console.error("Failed to refresh native runtime status", error);
+        }
+      }
+    };
+
+    void refreshRuntimeStatus();
+    const intervalHandle = window.setInterval(() => {
+      void refreshRuntimeStatus();
+    }, 1000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalHandle);
+    };
+  }, [isNativeManagedConnection]);
 
   /* Data loading */
   const loadCoreData = useCallback(async () => {
@@ -4875,6 +4959,18 @@ export function App(): React.JSX.Element {
                     <div className="mt-3 text-[11px] text-muted-foreground/80">
                       This desktop is starting the local host services.
                     </div>
+                    {nativeRuntimeStatus && (
+                      <div className="mt-4 space-y-2 text-left">
+                        <NativeRuntimeServiceCard
+                          label="Local 4311"
+                          status={nativeRuntimeStatus.server4311Status}
+                        />
+                        <NativeRuntimeServiceCard
+                          label="Local 4312"
+                          status={nativeRuntimeStatus.web4312Status}
+                        />
+                      </div>
+                    )}
                   </div>
                 </motion.div>
               )}
@@ -5450,100 +5546,94 @@ export function App(): React.JSX.Element {
                       </div>
                       <div className="space-y-1.5">
                         <Label className="text-sm font-medium">
-                          Connection Addresses
+                          Local Service Status
                         </Label>
-                        <div className="text-xs text-muted-foreground">
-                          Use any of these addresses from another device on the
-                          same network.
-                        </div>
                         <div className="space-y-2">
-                          {nativeRuntimeStatus.localConnectUrls.map(
-                            (connectUrl) => (
-                              <div
-                                key={connectUrl}
-                                className="rounded-lg border border-border bg-background px-3 py-2"
-                              >
-                                <div className="font-mono text-xs text-foreground">
-                                  {connectUrl}
-                                </div>
-                              </div>
-                            ),
-                          )}
+                          <NativeRuntimeServiceCard
+                            label="Local 4311"
+                            status={nativeRuntimeStatus.server4311Status}
+                          />
+                          <NativeRuntimeServiceCard
+                            label="Local 4312"
+                            status={nativeRuntimeStatus.web4312Status}
+                          />
                         </div>
                       </div>
                     </div>
                   )}
 
-                <div className="space-y-1.5">
-                  <Label className="text-sm font-medium">Host Address</Label>
-                  <div className="text-xs text-muted-foreground">
-                    Enter the address shown on the Farfield host device.
-                  </div>
-                  <Input
-                    value={serverBaseUrlDraft}
-                    onChange={(e) => setServerBaseUrlDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void saveServerTarget();
-                      }
-                    }}
-                    placeholder="http://192.168.1.23:4311"
-                    className="h-9 text-sm"
-                  />
-                </div>
+                {!isNativeManagedConnection && (
+                  <>
+                    <div className="space-y-1.5">
+                      <Label className="text-sm font-medium">Host Address</Label>
+                      <div className="text-xs text-muted-foreground">
+                        Enter the address shown on the Farfield host device.
+                      </div>
+                      <Input
+                        value={serverBaseUrlDraft}
+                        onChange={(e) => setServerBaseUrlDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void saveServerTarget();
+                          }
+                        }}
+                        placeholder="http://192.168.1.23:4311"
+                        className="h-9 text-sm"
+                      />
+                    </div>
 
-                <div className="space-y-1.5">
-                  <Label className="text-sm font-medium">Password</Label>
-                  <div className="text-xs text-muted-foreground">
-                    Enter the 6-digit password from the host device.
-                  </div>
-                  <Input
-                    value={sharedSecretDraft}
-                    onChange={(e) => setSharedSecretDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") {
-                        e.preventDefault();
-                        void saveServerTarget();
-                      }
-                    }}
-                    placeholder="Enter the 6-digit password"
-                    className="h-9 text-sm"
-                    type="password"
-                    inputMode="numeric"
-                    autoComplete="one-time-code"
-                  />
-                </div>
+                    <div className="space-y-1.5">
+                      <Label className="text-sm font-medium">Password</Label>
+                      <div className="text-xs text-muted-foreground">
+                        Enter the 6-digit password from the host device.
+                      </div>
+                      <Input
+                        value={sharedSecretDraft}
+                        onChange={(e) => setSharedSecretDraft(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            void saveServerTarget();
+                          }
+                        }}
+                        placeholder="Enter the 6-digit password"
+                        className="h-9 text-sm"
+                        type="password"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                      />
+                    </div>
 
-                <div className="flex gap-2">
-                  <Button
-                    type="button"
-                    onClick={() => {
-                      void saveServerTarget();
-                    }}
-                    variant="outline"
-                    className="h-8 text-xs"
-                    disabled={
-                      serverBaseUrlDraft.trim().length === 0 ||
-                      sharedSecretDraft.trim().length === 0 ||
-                      !hasServerBaseUrlDraftChanges
-                    }
-                  >
-                    Connect As Client
-                  </Button>
-                  {!isNativeManagedConnection && (
-                    <Button
-                      type="button"
-                      onClick={() => {
-                        void useDefaultServerTarget();
-                      }}
-                      variant="outline"
-                      className="h-8 text-xs"
-                    >
-                      Use automatic
-                    </Button>
-                  )}
-                </div>
+                    <div className="flex gap-2">
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          void saveServerTarget();
+                        }}
+                        variant="outline"
+                        className="h-8 text-xs"
+                        disabled={
+                          serverBaseUrlDraft.trim().length === 0 ||
+                          sharedSecretDraft.trim().length === 0 ||
+                          !hasServerBaseUrlDraftChanges
+                        }
+                      >
+                        Connect As Client
+                      </Button>
+                      <Button
+                        type="button"
+                        onClick={() => {
+                          void useDefaultServerTarget();
+                        }}
+                        variant="outline"
+                        className="h-8 text-xs"
+                      >
+                        Use automatic
+                      </Button>
+                    </div>
+                  </>
+                )}
 
                 <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
                   {isNativeManagedConnection

@@ -32,6 +32,11 @@ type UnifiedCommandResultByKind<K extends UnifiedCommandKind> = Extract<
   UnifiedCommandResult,
   { kind: K }
 >;
+type UnifiedUserMessageContentPart = Extract<
+  ThreadConversationState["turns"][number]["items"][number],
+  { type: "userMessage" }
+>["content"][number];
+type UnifiedMappedInputPart = Extract<UnifiedItem, { type: "userMessage" }>["content"][number];
 
 type UnifiedCommandHandler<K extends UnifiedCommandKind> = (
   command: UnifiedCommandByKind<K>,
@@ -886,6 +891,33 @@ function normalizeUnixTimestampSeconds(value: number): number {
   return Math.floor(value);
 }
 
+function mapUnifiedInputPart(
+  part: UnifiedUserMessageContentPart,
+): UnifiedMappedInputPart {
+  switch (part.type) {
+    case "text":
+      return { type: "text", text: part.text };
+    case "image":
+      return { type: "image", url: part.url };
+    case "localImage":
+      return { type: "localImage", path: part.path };
+    case "skill":
+      return {
+        type: "skill",
+        name: part.name,
+        path: part.path,
+      };
+    case "mention":
+      return {
+        type: "mention",
+        name: part.name,
+        path: part.path,
+      };
+    default:
+      return assertNever(part);
+  }
+}
+
 function mapTurnItem(
   item: ThreadConversationState["turns"][number]["items"][number],
 ): UnifiedItem {
@@ -894,22 +926,14 @@ function mapTurnItem(
       return {
         id: item.id,
         type: "userMessage",
-        content: item.content.map((part) =>
-          part.type === "text"
-            ? { type: "text", text: part.text }
-            : { type: "image", url: part.url },
-        ),
+        content: item.content.map(mapUnifiedInputPart),
       };
 
     case "steeringUserMessage":
       return {
         id: item.id,
         type: "steeringUserMessage",
-        content: item.content.map((part) =>
-          part.type === "text"
-            ? { type: "text", text: part.text }
-            : { type: "image", url: part.url },
-        ),
+        content: item.content.map(mapUnifiedInputPart),
         ...(item.attachments
           ? {
               attachments: item.attachments.map((attachment) =>
@@ -934,7 +958,14 @@ function mapTurnItem(
         ...(typeof item.willRetry === "boolean"
           ? { willRetry: item.willRetry }
           : {}),
-        ...(item.errorInfo !== undefined ? { errorInfo: item.errorInfo } : {}),
+        ...(item.errorInfo !== undefined
+          ? {
+              errorInfo:
+                item.errorInfo === null
+                  ? null
+                  : jsonValueFromString(JSON.stringify(item.errorInfo)),
+            }
+          : {}),
         ...(item.additionalDetails !== undefined
           ? {
               additionalDetails: jsonValueFromString(
@@ -1063,15 +1094,21 @@ function mapTurnItem(
         id: item.id,
         type: "webSearch",
         query: item.query,
-        action: {
-          type: item.action.type,
-          ...(item.action.query !== undefined
-            ? { query: item.action.query }
-            : {}),
-          ...(item.action.queries !== undefined
-            ? { queries: item.action.queries }
-            : {}),
-        },
+        ...(item.action !== undefined
+          ? {
+              action: item.action
+                ? {
+                    type: item.action.type,
+                    ...(item.action.query !== undefined
+                      ? { query: item.action.query }
+                      : {}),
+                    ...(item.action.queries !== undefined
+                      ? { queries: item.action.queries }
+                      : {}),
+                  }
+                : null,
+            }
+          : {}),
       };
 
     case "mcpToolCall":
@@ -1106,6 +1143,33 @@ function mapTurnItem(
         ...(item.error !== undefined
           ? { error: item.error ? { message: item.error.message } : null }
           : {}),
+        ...(item.durationMs !== undefined
+          ? { durationMs: item.durationMs }
+          : {}),
+      };
+
+    case "dynamicToolCall":
+      return {
+        id: item.id,
+        type: "dynamicToolCall",
+        tool: item.tool,
+        arguments: jsonValueFromString(JSON.stringify(item.arguments)),
+        status: item.status,
+        ...(item.contentItems !== undefined
+          ? {
+              contentItems: item.contentItems
+                ? item.contentItems.map((contentItem) =>
+                    contentItem.type === "inputText"
+                      ? { type: "inputText", text: contentItem.text }
+                      : {
+                          type: "inputImage",
+                          imageUrl: contentItem.imageUrl,
+                        },
+                  )
+                : null,
+            }
+          : {}),
+        ...(item.success !== undefined ? { success: item.success } : {}),
         ...(item.durationMs !== undefined
           ? { durationMs: item.durationMs }
           : {}),
@@ -1167,6 +1231,14 @@ function mapTurnItem(
         ...(item.sourceConversationTitle !== undefined
           ? { sourceConversationTitle: item.sourceConversationTitle }
           : {}),
+      };
+
+    case "unknown":
+      return {
+        id: item.id,
+        type: "unknown",
+        originalType: item.originalType,
+        payload: jsonValueFromString(JSON.stringify(item.payload)),
       };
 
     default:

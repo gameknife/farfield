@@ -7,6 +7,8 @@ import { DiffBlock } from "./DiffBlock";
 import { MarkdownText } from "./MarkdownText";
 import { WebSearchBlock } from "./WebSearchBlock";
 import { toolBlockSpacingClass } from "./conversation-tool-layout";
+import { ExpandableToolBlock } from "./ExpandableToolBlock";
+import { CodeSnippet } from "./CodeSnippet";
 
 type UserMessageLikeItem = Extract<
   UnifiedItem,
@@ -24,7 +26,22 @@ interface Props {
 
 function readTextContent(content: UserMessageLikeItem["content"]): string {
   return content
-    .map((part) => (part.type === "text" ? part.text : ""))
+    .map((part) => {
+      switch (part.type) {
+        case "text":
+          return part.text;
+        case "image":
+          return "[Image]";
+        case "localImage":
+          return `[Local image] ${part.path}`;
+        case "skill":
+          return `[Skill] ${part.name}`;
+        case "mention":
+          return `[Mention] ${part.name}`;
+        default:
+          return assertNever(part);
+      }
+    })
     .filter((text) => text.length > 0)
     .join("\n");
 }
@@ -239,6 +256,53 @@ const ITEM_RENDERERS = {
     );
   },
 
+  dynamicToolCall: ({ item, toolSpacing }) => {
+    const argumentsText = JSON.stringify(item.arguments, null, 2);
+    const contentItemsText = item.contentItems
+      ? JSON.stringify(item.contentItems, null, 2)
+      : null;
+    return (
+      <ExpandableToolBlock
+        className={toolSpacing}
+        title="Dynamic tool"
+        summary={`${item.tool} (${item.status})`}
+        defaultExpanded={item.status === "inProgress"}
+        isActive={item.status === "inProgress"}
+        durationMs={item.durationMs}
+        statusTone={
+          item.status === "failed"
+            ? "danger"
+            : item.status === "completed"
+              ? "success"
+              : "neutral"
+        }
+        body={
+          <div className="space-y-3">
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Arguments
+              </div>
+              <CodeSnippet code={argumentsText} language="json" />
+            </div>
+            {contentItemsText && (
+              <div>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Content Items
+                </div>
+                <CodeSnippet code={contentItemsText} language="json" />
+              </div>
+            )}
+            {item.success != null && (
+              <div className="text-xs text-muted-foreground">
+                success: {String(item.success)}
+              </div>
+            )}
+          </div>
+        }
+      />
+    );
+  },
+
   collabAgentToolCall: ({ item, toolSpacing }) => (
     <div
       className={`${toolSpacing} rounded-lg border border-border bg-muted/20 px-3 py-2`}
@@ -322,6 +386,30 @@ const ITEM_RENDERERS = {
       </div>
     </div>
   ),
+
+  unknown: ({ item, toolSpacing }) => (
+    <ExpandableToolBlock
+      className={toolSpacing}
+      title="Unknown item"
+      summary={`original type: ${item.originalType}`}
+      body={
+        <div className="space-y-3">
+          <div className="text-xs text-muted-foreground">
+            Farfield does not have a dedicated renderer for this thread item yet.
+          </div>
+          <div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Payload
+            </div>
+            <CodeSnippet
+              code={JSON.stringify(item.payload, null, 2)}
+              language="json"
+            />
+          </div>
+        </div>
+      }
+    />
+  ),
 } satisfies ItemRendererMap;
 
 function assertNever(value: never): never {
@@ -361,6 +449,8 @@ function renderItem(
       return ITEM_RENDERERS.webSearch({ item, ...context });
     case "mcpToolCall":
       return ITEM_RENDERERS.mcpToolCall({ item, ...context });
+    case "dynamicToolCall":
+      return ITEM_RENDERERS.dynamicToolCall({ item, ...context });
     case "collabAgentToolCall":
       return ITEM_RENDERERS.collabAgentToolCall({ item, ...context });
     case "imageView":
@@ -375,6 +465,8 @@ function renderItem(
       return ITEM_RENDERERS.modelChanged({ item, ...context });
     case "forkedFromConversation":
       return ITEM_RENDERERS.forkedFromConversation({ item, ...context });
+    case "unknown":
+      return ITEM_RENDERERS.unknown({ item, ...context });
     default:
       return assertNever(item);
   }

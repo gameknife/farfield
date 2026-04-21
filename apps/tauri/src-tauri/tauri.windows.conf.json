@@ -1,10 +1,9 @@
 {
   "$schema": "../../node_modules/@tauri-apps/cli/config.schema.json",
   "bundle": {
-    "resources": [
-      "../../web/dist",
-      "binaries/farfield-server.exe",
-      "binaries/web-host.exe"
-    ]
+    "resources": {
+      "../../web/dist": "dist",
+      "binaries": "binaries"
+    }
   }
 }

@@ -21,7 +21,9 @@ import {
 } from "./generated/app-server/index.js";
 
 const AppServerThreadListResponseBaseSchema = GeneratedThreadListResponseSchema.passthrough();
-const AppServerThreadReadResponseBaseSchema = GeneratedThreadReadResponseSchema.passthrough();
+const AppServerThreadReadResponseBaseSchema = GeneratedThreadReadResponseSchema.extend({
+  thread: z.any()
+}).passthrough();
 const AppServerModelListResponseBaseSchema = GeneratedModelListResponseSchema.passthrough();
 const AppServerCollaborationModeListResponseBaseSchema =
   GeneratedCollaborationModeListResponseSchema.passthrough();

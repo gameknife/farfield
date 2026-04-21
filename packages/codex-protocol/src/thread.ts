@@ -45,7 +45,36 @@ export const InputImagePartSchema = z
   })
   .passthrough();
 
-export const InputPartSchema = z.union([InputTextPartSchema, InputImagePartSchema]);
+export const InputLocalImagePartSchema = z
+  .object({
+    type: z.literal("localImage"),
+    path: z.string()
+  })
+  .passthrough();
+
+export const InputSkillPartSchema = z
+  .object({
+    type: z.literal("skill"),
+    name: z.string(),
+    path: z.string()
+  })
+  .passthrough();
+
+export const InputMentionPartSchema = z
+  .object({
+    type: z.literal("mention"),
+    name: z.string(),
+    path: z.string()
+  })
+  .passthrough();
+
+export const InputPartSchema = z.union([
+  InputTextPartSchema,
+  InputImagePartSchema,
+  InputLocalImagePartSchema,
+  InputSkillPartSchema,
+  InputMentionPartSchema
+]);
 
 export const TurnStartParamsSchema = z
   .object({
@@ -79,9 +108,35 @@ export const UserMessageImageContentPartSchema = z
   })
   .passthrough();
 
+export const UserMessageLocalImageContentPartSchema = z
+  .object({
+    type: z.literal("localImage"),
+    path: z.string()
+  })
+  .passthrough();
+
+export const UserMessageSkillContentPartSchema = z
+  .object({
+    type: z.literal("skill"),
+    name: z.string(),
+    path: z.string()
+  })
+  .passthrough();
+
+export const UserMessageMentionContentPartSchema = z
+  .object({
+    type: z.literal("mention"),
+    name: z.string(),
+    path: z.string()
+  })
+  .passthrough();
+
 export const UserMessagePartSchema = z.union([
   UserMessageContentPartSchema,
-  UserMessageImageContentPartSchema
+  UserMessageImageContentPartSchema,
+  UserMessageLocalImageContentPartSchema,
+  UserMessageSkillContentPartSchema,
+  UserMessageMentionContentPartSchema
 ]);
 
 export const UserMessageItemSchema = z
@@ -115,7 +170,7 @@ export const ErrorItemSchema = z
     type: z.literal("error"),
     message: z.string(),
     willRetry: z.boolean().optional(),
-    errorInfo: z.union([z.string(), z.null()]).optional(),
+    errorInfo: z.union([JsonValueSchema, z.null()]).optional(),
     additionalDetails: z.union([JsonValueSchema, z.null()]).optional()
   })
   .passthrough();
@@ -254,7 +309,7 @@ export const WebSearchItemSchema = z
     type: z.literal("webSearch"),
     id: NonEmptyStringSchema,
     query: z.string(),
-    action: WebSearchActionSchema
+    action: z.union([WebSearchActionSchema, z.null()]).optional()
   })
   .passthrough();
 
@@ -309,6 +364,40 @@ export const McpToolCallItemSchema = z
     arguments: JsonValueSchema,
     result: z.union([McpToolCallResultSchema, z.null()]).optional(),
     error: z.union([McpToolCallErrorSchema, z.null()]).optional(),
+    durationMs: z.union([NonNegativeIntSchema, z.null()]).optional()
+  })
+  .passthrough();
+
+export const DynamicToolCallOutputContentItemSchema = z.union([
+  z
+    .object({
+      type: z.literal("inputText"),
+      text: z.string()
+    })
+    .passthrough(),
+  z
+    .object({
+      type: z.literal("inputImage"),
+      imageUrl: z.string()
+    })
+    .passthrough()
+]);
+
+export const DynamicToolCallStatusSchema = z.enum([
+  "inProgress",
+  "completed",
+  "failed"
+]);
+
+export const DynamicToolCallItemSchema = z
+  .object({
+    type: z.literal("dynamicToolCall"),
+    id: NonEmptyStringSchema,
+    tool: z.string(),
+    arguments: JsonValueSchema,
+    status: DynamicToolCallStatusSchema,
+    contentItems: z.union([z.array(DynamicToolCallOutputContentItemSchema), z.null()]).optional(),
+    success: z.union([z.boolean(), z.null()]).optional(),
     durationMs: z.union([NonNegativeIntSchema, z.null()]).optional()
   })
   .passthrough();
@@ -376,7 +465,7 @@ export const ExitedReviewModeItemSchema = z
   })
   .passthrough();
 
-export const TurnItemSchema = z.discriminatedUnion("type", [
+const KnownTurnItemSchema = z.discriminatedUnion("type", [
   UserMessageItemSchema,
   SteeringUserMessageItemSchema,
   AgentMessageItemSchema,
@@ -391,6 +480,7 @@ export const TurnItemSchema = z.discriminatedUnion("type", [
   ContextCompactionItemSchema,
   WebSearchItemSchema,
   McpToolCallItemSchema,
+  DynamicToolCallItemSchema,
   CollabAgentToolCallItemSchema,
   ImageViewItemSchema,
   EnteredReviewModeItemSchema,
@@ -399,6 +489,66 @@ export const TurnItemSchema = z.discriminatedUnion("type", [
   ModelChangedItemSchema,
   ForkedFromConversationItemSchema
 ]);
+
+const KNOWN_TURN_ITEM_TYPE_SET = new Set<string>([
+  "userMessage",
+  "steeringUserMessage",
+  "agentMessage",
+  "error",
+  "reasoning",
+  "plan",
+  "todo-list",
+  "planImplementation",
+  "userInputResponse",
+  "commandExecution",
+  "fileChange",
+  "contextCompaction",
+  "webSearch",
+  "mcpToolCall",
+  "dynamicToolCall",
+  "collabAgentToolCall",
+  "imageView",
+  "enteredReviewMode",
+  "exitedReviewMode",
+  "remoteTaskCreated",
+  "modelChanged",
+  "forkedFromConversation"
+]);
+
+export const UnknownTurnItemSchema = z
+  .object({
+    id: NonEmptyStringSchema,
+    type: z.literal("unknown"),
+    originalType: NonEmptyStringSchema,
+    payload: JsonValueSchema
+  })
+  .strict();
+
+export const TurnItemSchema = z.preprocess((value) => {
+  const candidate = z
+    .object({
+      id: NonEmptyStringSchema,
+      type: NonEmptyStringSchema
+    })
+    .passthrough()
+    .safeParse(value);
+
+  if (!candidate.success || KNOWN_TURN_ITEM_TYPE_SET.has(candidate.data.type)) {
+    return value;
+  }
+
+  const payload = JsonValueSchema.safeParse(value);
+  if (!payload.success) {
+    return value;
+  }
+
+  return {
+    id: candidate.data.id,
+    type: "unknown" as const,
+    originalType: candidate.data.type,
+    payload: payload.data
+  };
+}, z.union([KnownTurnItemSchema, UnknownTurnItemSchema]));
 
 export const UserInputRequestIdSchema = GeneratedRequestIdSchema;
 

@@ -83,6 +83,16 @@ function resolveCodexExecutablePath(): string {
     return process.env["CODEX_CLI_PATH"];
   }
 
+  if (process.platform === "win32") {
+    const bundledWindowsPath = path.join(
+      path.dirname(process.execPath),
+      "codex.exe",
+    );
+    if (fs.existsSync(bundledWindowsPath)) {
+      return bundledWindowsPath;
+    }
+  }
+
   const desktopPath = "/Applications/Codex.app/Contents/Resources/codex";
   if (fs.existsSync(desktopPath)) {
     return desktopPath;

@@ -109,7 +109,36 @@ const UnifiedInputImagePartSchema = z
   })
   .strict();
 
-export const UnifiedInputPartSchema = z.union([UnifiedInputTextPartSchema, UnifiedInputImagePartSchema]);
+const UnifiedInputLocalImagePartSchema = z
+  .object({
+    type: z.literal("localImage"),
+    path: z.string()
+  })
+  .strict();
+
+const UnifiedInputSkillPartSchema = z
+  .object({
+    type: z.literal("skill"),
+    name: z.string(),
+    path: z.string()
+  })
+  .strict();
+
+const UnifiedInputMentionPartSchema = z
+  .object({
+    type: z.literal("mention"),
+    name: z.string(),
+    path: z.string()
+  })
+  .strict();
+
+export const UnifiedInputPartSchema = z.union([
+  UnifiedInputTextPartSchema,
+  UnifiedInputImagePartSchema,
+  UnifiedInputLocalImagePartSchema,
+  UnifiedInputSkillPartSchema,
+  UnifiedInputMentionPartSchema
+]);
 export type UnifiedInputPart = z.infer<typeof UnifiedInputPartSchema>;
 
 const UnifiedQuestionOptionSchema = z
@@ -518,7 +547,7 @@ const UnifiedErrorItemSchema = z
     type: z.literal("error"),
     message: z.string(),
     willRetry: z.boolean().optional(),
-    errorInfo: NullableStringSchema.optional(),
+    errorInfo: z.union([JsonValueSchema, z.null()]).optional(),
     additionalDetails: z.union([JsonValueSchema, z.null()]).optional()
   })
   .strict();
@@ -647,12 +676,17 @@ const UnifiedWebSearchItemSchema = z
     type: z.literal("webSearch"),
     query: z.string(),
     action: z
-      .object({
-        type: NonEmptyStringSchema,
-        query: z.string().optional(),
-        queries: z.array(z.string()).optional()
-      })
-      .strict()
+      .union([
+        z
+          .object({
+            type: NonEmptyStringSchema,
+            query: z.string().optional(),
+            queries: z.array(z.string()).optional()
+          })
+          .strict(),
+        z.null()
+      ])
+      .optional()
   })
   .strict();
 
@@ -685,6 +719,34 @@ const UnifiedMcpToolCallItemSchema = z
         z.null()
       ])
       .optional(),
+    durationMs: z.union([NonNegativeIntSchema, z.null()]).optional()
+  })
+  .strict();
+
+const UnifiedDynamicToolCallContentItemSchema = z.union([
+  z
+    .object({
+      type: z.literal("inputText"),
+      text: z.string()
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("inputImage"),
+      imageUrl: z.string()
+    })
+    .strict()
+]);
+
+const UnifiedDynamicToolCallItemSchema = z
+  .object({
+    id: NonEmptyStringSchema,
+    type: z.literal("dynamicToolCall"),
+    tool: z.string(),
+    arguments: JsonValueSchema,
+    status: z.enum(["inProgress", "completed", "failed"]),
+    contentItems: z.union([z.array(UnifiedDynamicToolCallContentItemSchema), z.null()]).optional(),
+    success: z.union([z.boolean(), z.null()]).optional(),
     durationMs: z.union([NonNegativeIntSchema, z.null()]).optional()
   })
   .strict();
@@ -759,6 +821,15 @@ const UnifiedForkedFromConversationItemSchema = z
   })
   .strict();
 
+const UnifiedUnknownItemSchema = z
+  .object({
+    id: NonEmptyStringSchema,
+    type: z.literal("unknown"),
+    originalType: NonEmptyStringSchema,
+    payload: JsonValueSchema
+  })
+  .strict();
+
 export const UnifiedItemSchema = z.discriminatedUnion("type", [
   UnifiedUserMessageItemSchema,
   UnifiedSteeringUserMessageItemSchema,
@@ -774,13 +845,15 @@ export const UnifiedItemSchema = z.discriminatedUnion("type", [
   UnifiedContextCompactionItemSchema,
   UnifiedWebSearchItemSchema,
   UnifiedMcpToolCallItemSchema,
+  UnifiedDynamicToolCallItemSchema,
   UnifiedCollabAgentToolCallItemSchema,
   UnifiedImageViewItemSchema,
   UnifiedEnteredReviewModeItemSchema,
   UnifiedExitedReviewModeItemSchema,
   UnifiedRemoteTaskCreatedItemSchema,
   UnifiedModelChangedItemSchema,
-  UnifiedForkedFromConversationItemSchema
+  UnifiedForkedFromConversationItemSchema,
+  UnifiedUnknownItemSchema
 ]);
 
 export type UnifiedItem = z.infer<typeof UnifiedItemSchema>;
@@ -801,13 +874,15 @@ export const UNIFIED_ITEM_KINDS = [
   "contextCompaction",
   "webSearch",
   "mcpToolCall",
+  "dynamicToolCall",
   "collabAgentToolCall",
   "imageView",
   "enteredReviewMode",
   "exitedReviewMode",
   "remoteTaskCreated",
   "modelChanged",
-  "forkedFromConversation"
+  "forkedFromConversation",
+  "unknown"
 ] as const satisfies ReadonlyArray<UnifiedItemKind>;
 
 export const UnifiedTurnSchema = z
@@ -1298,13 +1373,15 @@ const ITEM_KIND_COVERAGE: Record<UnifiedItemKind, true> = {
   contextCompaction: true,
   webSearch: true,
   mcpToolCall: true,
+  dynamicToolCall: true,
   collabAgentToolCall: true,
   imageView: true,
   enteredReviewMode: true,
   exitedReviewMode: true,
   remoteTaskCreated: true,
   modelChanged: true,
-  forkedFromConversation: true
+  forkedFromConversation: true,
+  unknown: true
 };
 
 const FEATURE_ID_COVERAGE: Record<UnifiedFeatureId, true> = {
