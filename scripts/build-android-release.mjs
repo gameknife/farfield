@@ -109,6 +109,25 @@ if (!existsSync(apksignerPath)) {
 await runCommand("bun", ["run", "prepare:workspace-dist"]);
 await runCommand("bun", ["run", "--filter", "@farfield/tauri", "build:sidecars"]);
 
+const androidGenDir = path.join(
+  repoRoot,
+  "apps/tauri/src-tauri/gen/android",
+);
+if (!existsSync(androidGenDir)) {
+  await runCommand(
+    "bunx",
+    ["tauri", "android", "init"],
+    {
+      cwd: path.join(repoRoot, "apps/tauri"),
+      env: {
+        ...process.env,
+        ANDROID_HOME: sdkRoot,
+        ANDROID_SDK_ROOT: sdkRoot,
+      },
+    },
+  );
+}
+
 await runCommand(
   "bunx",
   ["tauri", "android", "build", "--apk", "--ci"],

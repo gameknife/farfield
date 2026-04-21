@@ -45,6 +45,8 @@ function runCommand(command, args, options = {}) {
   });
 }
 
+await runCommand("bun", ["run", "prepare:workspace-dist"]);
+
 if (currentPlatform === "macos") {
   const tauriConfigPath = path.join(
     repoRoot,
