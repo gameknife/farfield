@@ -164,20 +164,69 @@ if (!existsSync(unsignedApkPath)) {
   throw new Error(`Unsigned APK not found at ${unsignedApkPath}`);
 }
 
-await runCommand(apksignerPath, [
-  "sign",
-  "--ks",
-  keystorePath,
-  "--ks-key-alias",
-  keyAlias,
-  "--ks-pass",
-  `pass:${keystorePassword}`,
-  "--key-pass",
-  `pass:${keyPassword}`,
-  "--out",
-  signedApkPath,
-  unsignedApkPath,
-]);
+async function signWith({ ks, alias, storePass, keyPass }) {
+  await runCommand(apksignerPath, [
+    "sign",
+    "--ks",
+    ks,
+    "--ks-key-alias",
+    alias,
+    "--ks-pass",
+    `pass:${storePass}`,
+    "--key-pass",
+    `pass:${keyPass}`,
+    "--out",
+    signedApkPath,
+    unsignedApkPath,
+  ]);
+}
+
+try {
+  await signWith({
+    ks: keystorePath,
+    alias: keyAlias,
+    storePass: keystorePassword,
+    keyPass: keyPassword,
+  });
+} catch (error) {
+  if (!usingReleaseKeystore) {
+    throw error;
+  }
+  console.warn(
+    `Release signing failed (${error.message}). Falling back to a freshly generated debug keystore so the APK is still installable. Fix ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD secrets to re-enable release signing.`,
+  );
+
+  if (!existsSync(defaultDebugKeystorePath)) {
+    mkdirSync(path.dirname(defaultDebugKeystorePath), { recursive: true });
+    await runCommand("keytool", [
+      "-genkeypair",
+      "-v",
+      "-keystore",
+      defaultDebugKeystorePath,
+      "-storepass",
+      "android",
+      "-alias",
+      "androiddebugkey",
+      "-keypass",
+      "android",
+      "-dname",
+      "CN=Android Debug,O=Android,C=US",
+      "-keyalg",
+      "RSA",
+      "-keysize",
+      "2048",
+      "-validity",
+      "10000",
+    ]);
+  }
+
+  await signWith({
+    ks: defaultDebugKeystorePath,
+    alias: "androiddebugkey",
+    storePass: "android",
+    keyPass: "android",
+  });
+}
 
 await runCommand(apksignerPath, ["verify", "--print-certs", signedApkPath]);
 
