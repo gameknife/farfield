@@ -149,3 +149,14 @@ export async function getNativeRuntimeStatus(): Promise<NativeRuntimeStatus | nu
   }
   return NativeRuntimeStatusSchema.parse(result);
 }
+
+export async function openExternalUrl(url: string): Promise<void> {
+  const normalizedUrl = z.string().url().parse(url);
+  const result = await invokeTauriCommand<null>("farfield_open_external_url", {
+    url: normalizedUrl,
+  });
+  if (result !== null) {
+    return;
+  }
+  window.open(normalizedUrl, "_blank", "noopener,noreferrer");
+}

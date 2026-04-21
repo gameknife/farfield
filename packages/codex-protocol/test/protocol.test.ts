@@ -861,6 +861,30 @@ describe("codex-protocol schemas", () => {
     expect(parsed.turns[0]?.items[0]?.type).toBe("dynamicToolCall");
   });
 
+  it("parses thread conversation state with imageGeneration item", () => {
+    const parsed = parseThreadConversationState({
+      id: "thread-123",
+      turns: [
+        {
+          status: "completed",
+          items: [
+            {
+              id: "item-image-generation",
+              type: "imageGeneration",
+              status: "completed",
+              revisedPrompt: "Generate a compact card UI",
+              result:
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9sWvya4AAAAASUVORK5CYII=",
+            },
+          ],
+        },
+      ],
+      requests: [],
+    });
+
+    expect(parsed.turns[0]?.items[0]?.type).toBe("imageGeneration");
+  });
+
   it("normalizes unknown thread items into unknown item schema", () => {
     const parsed = parseThreadConversationState({
       id: "thread-123",
@@ -1132,6 +1156,42 @@ describe("codex-protocol schemas", () => {
 
     expect(parsed.thread.turns[0]?.items[0]?.type).toBe("dynamicToolCall");
     expect(parsed.thread.turns[0]?.items[1]?.type).toBe("unknown");
+  });
+
+  it("parses app-server thread/read response with imageGeneration item", () => {
+    const parsed = parseAppServerReadThreadResponse({
+      thread: {
+        id: "thread-123",
+        preview: "hello",
+        modelProvider: "openai",
+        createdAt: 1700000000,
+        updatedAt: 1700000000,
+        cwd: "/tmp/workspace",
+        source: "cli",
+        status: {
+          type: "idle",
+        },
+        path: "/tmp/thread.jsonl",
+        cliVersion: "0.1.0",
+        turns: [
+          {
+            id: "turn-1",
+            status: "completed",
+            items: [
+              {
+                id: "item-1",
+                type: "imageGeneration",
+                status: "generating",
+                revisedPrompt: "Generate a compact card UI",
+                result: null,
+              },
+            ],
+          },
+        ],
+      },
+    });
+
+    expect(parsed.thread.turns[0]?.items[0]?.type).toBe("imageGeneration");
   });
 
   it("parses app-server thread/start response", () => {

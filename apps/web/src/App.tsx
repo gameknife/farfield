@@ -5546,6 +5546,29 @@ export function App(): React.JSX.Element {
                       </div>
                       <div className="space-y-1.5">
                         <Label className="text-sm font-medium">
+                          Connection Addresses
+                        </Label>
+                        <div className="text-xs text-muted-foreground">
+                          Use any of these addresses from another device on the
+                          same network.
+                        </div>
+                        <div className="space-y-2">
+                          {nativeRuntimeStatus.localConnectUrls.map(
+                            (connectUrl) => (
+                              <div
+                                key={connectUrl}
+                                className="rounded-lg border border-border bg-background px-3 py-2"
+                              >
+                                <div className="font-mono text-xs text-foreground">
+                                  {connectUrl}
+                                </div>
+                              </div>
+                            ),
+                          )}
+                        </div>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-sm font-medium">
                           Local Service Status
                         </Label>
                         <div className="space-y-2">

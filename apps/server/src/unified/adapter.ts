@@ -1175,6 +1175,24 @@ function mapTurnItem(
           : {}),
       };
 
+    case "imageGeneration":
+      return {
+        id: item.id,
+        type: "imageGeneration",
+        status: item.status,
+        ...(item.revisedPrompt !== undefined
+          ? { revisedPrompt: item.revisedPrompt }
+          : {}),
+        ...(item.result !== undefined
+          ? {
+              result:
+                item.result === null
+                  ? null
+                  : jsonValueFromString(JSON.stringify(item.result)),
+            }
+          : {}),
+      };
+
     case "collabAgentToolCall":
       return {
         id: item.id,

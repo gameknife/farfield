@@ -133,9 +133,7 @@ const server = http.createServer((req, res) => {
     res.writeHead(200, {
       "Content-Type": getContentType(assetPath),
       "Content-Length": body.length,
-      "Cache-Control": assetPath.endsWith("index.html")
-        ? "no-cache"
-        : "public, max-age=31536000, immutable",
+      "Cache-Control": "no-store",
     });
     res.end(body);
   } catch (error) {

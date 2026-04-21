@@ -488,6 +488,55 @@ fn configure_child_process(command: &mut Command) {
     command.creation_flags(CREATE_NO_WINDOW);
 }
 
+fn configure_background_command(command: &mut Command) {
+    configure_child_process(command);
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+}
+
+fn open_external_url(url: &str) -> Result<(), String> {
+    let parsed = Url::parse(url).map_err(|error| error.to_string())?;
+    match parsed.scheme() {
+        "http" | "https" | "mailto" => {}
+        _ => return Err("Unsupported URL scheme".to_string()),
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        let mut command = Command::new("cmd");
+        command.args(["/C", "start", "", url]);
+        configure_background_command(&mut command);
+        command.spawn().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        let mut command = Command::new("open");
+        command.arg(url);
+        configure_background_command(&mut command);
+        command.spawn().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(all(target_os = "linux", not(target_os = "android")))]
+    {
+        let mut command = Command::new("xdg-open");
+        command.arg(url);
+        configure_background_command(&mut command);
+        command.spawn().map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let _ = parsed;
+        Err("Opening external URLs is not supported on Android".to_string())
+    }
+}
+
 fn runtime_service_status_mut<'a>(
     runtime: &'a mut RuntimeStatus,
     service_kind: RuntimeServiceKind,
@@ -1008,6 +1057,11 @@ fn farfield_activate_host_mode(
     apply_connection_config(&app, &state, next_connection, true)
 }
 
+#[tauri::command]
+fn farfield_open_external_url(url: String) -> Result<(), String> {
+    open_external_url(&url)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let app = tauri::Builder::default()
@@ -1029,7 +1083,8 @@ pub fn run() {
             farfield_get_bootstrap,
             farfield_get_runtime_status,
             farfield_set_connection_config,
-            farfield_activate_host_mode
+            farfield_activate_host_mode,
+            farfield_open_external_url
         ])
         .build(tauri::generate_context!())
         .expect("error while building Farfield Tauri app");

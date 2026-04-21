@@ -751,6 +751,16 @@ const UnifiedDynamicToolCallItemSchema = z
   })
   .strict();
 
+const UnifiedImageGenerationItemSchema = z
+  .object({
+    id: NonEmptyStringSchema,
+    type: z.literal("imageGeneration"),
+    status: NonEmptyStringSchema,
+    revisedPrompt: NullableStringSchema.optional(),
+    result: z.union([JsonValueSchema, z.null()]).optional()
+  })
+  .strict();
+
 const UnifiedCollabAgentToolCallItemSchema = z
   .object({
     id: NonEmptyStringSchema,
@@ -846,6 +856,7 @@ export const UnifiedItemSchema = z.discriminatedUnion("type", [
   UnifiedWebSearchItemSchema,
   UnifiedMcpToolCallItemSchema,
   UnifiedDynamicToolCallItemSchema,
+  UnifiedImageGenerationItemSchema,
   UnifiedCollabAgentToolCallItemSchema,
   UnifiedImageViewItemSchema,
   UnifiedEnteredReviewModeItemSchema,
@@ -875,6 +886,7 @@ export const UNIFIED_ITEM_KINDS = [
   "webSearch",
   "mcpToolCall",
   "dynamicToolCall",
+  "imageGeneration",
   "collabAgentToolCall",
   "imageView",
   "enteredReviewMode",
@@ -1374,6 +1386,7 @@ const ITEM_KIND_COVERAGE: Record<UnifiedItemKind, true> = {
   webSearch: true,
   mcpToolCall: true,
   dynamicToolCall: true,
+  imageGeneration: true,
   collabAgentToolCall: true,
   imageView: true,
   enteredReviewMode: true,

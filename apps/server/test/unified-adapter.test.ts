@@ -615,4 +615,52 @@ describe("unified provider adapters", () => {
         : null,
     ).toBe("task-123");
   });
+
+  it("maps imageGeneration turn items into unified items", async () => {
+    const adapter = createCodexAdapter();
+    adapter.readThread = async () => ({
+      thread: {
+        ...SAMPLE_THREAD,
+        turns: [
+          {
+            id: "turn-1",
+            status: "inProgress",
+            items: [
+              {
+                id: "item-image-generation",
+                type: "imageGeneration",
+                status: "generating",
+                revisedPrompt: "Generate a compact card UI",
+                result:
+                  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9sWvya4AAAAASUVORK5CYII=",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const unified = new AgentUnifiedProviderAdapter("codex", adapter);
+
+    const result = await unified.execute(
+      UnifiedCommandSchema.parse({
+        kind: "readThread",
+        provider: "codex",
+        threadId: SAMPLE_THREAD.id,
+        includeTurns: true,
+      }),
+    );
+
+    expect(result.kind).toBe("readThread");
+    if (result.kind !== "readThread") {
+      return;
+    }
+
+    const imageGenerationItem = result.thread.turns[0]?.items[0];
+    expect(imageGenerationItem?.type).toBe("imageGeneration");
+    expect(
+      imageGenerationItem && imageGenerationItem.type === "imageGeneration"
+        ? imageGenerationItem.status
+        : null,
+    ).toBe("generating");
+  });
 });

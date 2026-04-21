@@ -1,6 +1,12 @@
 import { memo } from "react";
 import { GitBranch } from "lucide-react";
-import type { UnifiedItem, UnifiedItemKind } from "@farfield/unified-surface";
+import {
+  JsonValueSchema,
+  type JsonValue,
+  type UnifiedItem,
+  type UnifiedItemKind,
+} from "@farfield/unified-surface";
+import { z } from "zod";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { CommandBlock } from "./CommandBlock";
 import { DiffBlock } from "./DiffBlock";
@@ -14,6 +20,153 @@ type UserMessageLikeItem = Extract<
   UnifiedItem,
   { type: "userMessage" | "steeringUserMessage" }
 >;
+type MessageContentPart = UserMessageLikeItem["content"][number];
+
+const DataImageUrlSchema = z
+  .string()
+  .regex(/^data:image\/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=\s]+$/);
+
+const ImageMimeTypeSchema = z.string().regex(/^image\/[a-zA-Z0-9.+-]+$/);
+
+const Base64ImagePayloadSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9+/=\s]+$/)
+  .refine((value) => value.replaceAll(/\s+/g, "").length >= 64);
+
+const DirectImageGenerationImageSchema = z.union([
+  DataImageUrlSchema.transform((value) => value),
+  Base64ImagePayloadSchema.transform(
+    (value) => `data:image/png;base64,${value.replaceAll(/\s+/g, "")}`,
+  ),
+  z
+    .object({
+      imageBase64: Base64ImagePayloadSchema,
+    })
+    .passthrough()
+    .transform(
+      (value) =>
+        `data:image/png;base64,${value.imageBase64.replaceAll(/\s+/g, "")}`,
+    ),
+  z
+    .object({
+      b64_json: Base64ImagePayloadSchema,
+    })
+    .passthrough()
+    .transform(
+      (value) => `data:image/png;base64,${value.b64_json.replaceAll(/\s+/g, "")}`,
+    ),
+  z
+    .object({
+      mimeType: ImageMimeTypeSchema,
+      data: Base64ImagePayloadSchema,
+    })
+    .passthrough()
+    .transform(
+      (value) =>
+        `data:${value.mimeType};base64,${value.data.replaceAll(/\s+/g, "")}`,
+    ),
+  z
+    .object({
+      mimeType: ImageMimeTypeSchema,
+      base64: Base64ImagePayloadSchema,
+    })
+    .passthrough()
+    .transform(
+      (value) =>
+        `data:${value.mimeType};base64,${value.base64.replaceAll(/\s+/g, "")}`,
+    ),
+  z
+    .object({
+      mimeType: ImageMimeTypeSchema,
+      imageBase64: Base64ImagePayloadSchema,
+    })
+    .passthrough()
+    .transform(
+      (value) =>
+        `data:${value.mimeType};base64,${value.imageBase64.replaceAll(/\s+/g, "")}`,
+    ),
+  z
+    .object({
+      imageUrl: DataImageUrlSchema,
+    })
+    .passthrough()
+    .transform((value) => value.imageUrl),
+  z
+    .object({
+      url: DataImageUrlSchema,
+    })
+    .passthrough()
+    .transform((value) => value.url),
+]);
+
+const ImageGenerationResultSchema: z.ZodType<
+  string[],
+  z.ZodTypeDef,
+  JsonValue
+> = z.lazy(() =>
+  JsonValueSchema.pipe(
+    z.union([
+      DirectImageGenerationImageSchema.transform((value) => [value]),
+      z
+        .object({
+          image: ImageGenerationResultSchema,
+        })
+        .passthrough()
+        .transform((value) => value.image),
+      z
+        .object({
+          images: z.array(ImageGenerationResultSchema),
+        })
+        .passthrough()
+        .transform((value) => value.images.flat()),
+      z
+        .object({
+          texture: ImageGenerationResultSchema,
+        })
+        .passthrough()
+        .transform((value) => value.texture),
+      z
+        .object({
+          textures: z.array(ImageGenerationResultSchema),
+        })
+        .passthrough()
+        .transform((value) => value.textures.flat()),
+      z
+        .object({
+          result: ImageGenerationResultSchema,
+        })
+        .passthrough()
+        .transform((value) => value.result),
+      z
+        .object({
+          output: ImageGenerationResultSchema,
+        })
+        .passthrough()
+        .transform((value) => value.output),
+      z
+        .object({
+          content: z.array(ImageGenerationResultSchema),
+        })
+        .passthrough()
+        .transform((value) => value.content.flat()),
+      z
+        .object({
+          artifacts: z.array(ImageGenerationResultSchema),
+        })
+        .passthrough()
+        .transform((value) => value.artifacts.flat()),
+      z
+        .object({
+          data: ImageGenerationResultSchema,
+        })
+        .passthrough()
+        .transform((value) => value.data),
+      z
+        .array(ImageGenerationResultSchema)
+        .transform((value) => value.flat()),
+    ]),
+  ),
+);
 
 interface Props {
   item: UnifiedItem;
@@ -24,26 +177,107 @@ interface Props {
   nextItemType?: UnifiedItem["type"] | undefined;
 }
 
-function readTextContent(content: UserMessageLikeItem["content"]): string {
-  return content
-    .map((part) => {
-      switch (part.type) {
-        case "text":
-          return part.text;
-        case "image":
-          return "[Image]";
-        case "localImage":
-          return `[Local image] ${part.path}`;
-        case "skill":
-          return `[Skill] ${part.name}`;
-        case "mention":
-          return `[Mention] ${part.name}`;
-        default:
-          return assertNever(part);
-      }
-    })
-    .filter((text) => text.length > 0)
-    .join("\n");
+function renderImagePreview(src: string, alt: string): React.JSX.Element {
+  return (
+    <img
+      src={src}
+      alt={alt}
+      className="max-h-80 w-auto max-w-full rounded-xl border border-border bg-background/50 object-contain shadow-sm"
+    />
+  );
+}
+
+function isInlineDataImageUrl(value: string): boolean {
+  return DataImageUrlSchema.safeParse(value).success;
+}
+
+function extractImageGenerationResultImages(
+  value: JsonValue | null | undefined,
+): string[] {
+  if (value === null || value === undefined) {
+    return [];
+  }
+
+  const parsed = ImageGenerationResultSchema.safeParse(value);
+  if (!parsed.success) {
+    return [];
+  }
+
+  return [...new Set(parsed.data)];
+}
+
+function renderMessagePart(
+  part: MessageContentPart,
+  key: string,
+): React.JSX.Element {
+  switch (part.type) {
+    case "text":
+      return <MarkdownText key={key} text={part.text} />;
+    case "image":
+      return (
+        <div key={key} className="space-y-2">
+          {renderImagePreview(part.url, "Attached image")}
+          {!isInlineDataImageUrl(part.url) && (
+            <div className="font-mono text-[11px] text-muted-foreground break-all">
+              {part.url}
+            </div>
+          )}
+        </div>
+      );
+    case "localImage":
+      return (
+        <div key={key} className="space-y-2">
+          {renderImagePreview(part.path, "Attached local image")}
+          <div className="font-mono text-[11px] text-muted-foreground break-all">
+            {part.path}
+          </div>
+        </div>
+      );
+    case "skill":
+      return (
+        <div
+          key={key}
+          className="inline-flex max-w-full items-center rounded-full border border-border bg-background/60 px-3 py-1 text-xs text-foreground"
+        >
+          <span className="mr-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+            Skill
+          </span>
+          <span className="truncate">{part.name}</span>
+        </div>
+      );
+    case "mention":
+      return (
+        <div
+          key={key}
+          className="inline-flex max-w-full items-center rounded-full border border-border bg-background/60 px-3 py-1 text-xs text-foreground"
+        >
+          <span className="mr-2 text-[10px] uppercase tracking-wider text-muted-foreground">
+            Mention
+          </span>
+          <span className="truncate">{part.name}</span>
+        </div>
+      );
+    default:
+      return assertNever(part);
+  }
+}
+
+function renderUserMessageBubble(
+  content: UserMessageLikeItem["content"],
+): React.JSX.Element | null {
+  if (content.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="flex justify-end">
+      <div className="max-w-[80%] space-y-3 rounded-2xl bg-muted px-4 py-3 text-sm text-foreground leading-relaxed">
+        {content.map((part, index) =>
+          renderMessagePart(part, `${part.type}-${String(index)}`),
+        )}
+      </div>
+    </div>
+  );
 }
 
 interface RendererContext {
@@ -60,33 +294,11 @@ type ItemRendererMap = {
 
 const ITEM_RENDERERS = {
   userMessage: ({ item }) => {
-    const text = readTextContent(item.content);
-    if (!text) {
-      return null;
-    }
-
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] rounded-2xl bg-muted px-4 py-2.5 text-sm text-foreground leading-relaxed">
-          <p className="whitespace-pre-wrap break-words">{text}</p>
-        </div>
-      </div>
-    );
+    return renderUserMessageBubble(item.content);
   },
 
   steeringUserMessage: ({ item }) => {
-    const text = readTextContent(item.content);
-    if (!text) {
-      return null;
-    }
-
-    return (
-      <div className="flex justify-end">
-        <div className="max-w-[80%] rounded-2xl bg-muted px-4 py-2.5 text-sm text-foreground leading-relaxed">
-          <p className="whitespace-pre-wrap break-words">{text}</p>
-        </div>
-      </div>
-    );
+    return renderUserMessageBubble(item.content);
   },
 
   agentMessage: ({ item }) => {
@@ -223,36 +435,115 @@ const ITEM_RENDERERS = {
   ),
 
   mcpToolCall: ({ item, toolSpacing }) => {
-    const argumentsText = JSON.stringify(item.arguments);
+    const argumentsText = JSON.stringify(item.arguments, null, 2);
+    const resultText =
+      item.result?.content && item.result.content.length > 0
+        ? JSON.stringify(item.result.content, null, 2)
+        : null;
     return (
-      <div
-        className={`${toolSpacing} rounded-lg border border-border bg-muted/20 px-3 py-2`}
-      >
-        <div className="text-[10px] text-muted-foreground font-mono mb-1 uppercase tracking-wider">
-          MCP tool
-        </div>
-        <div className="text-xs text-foreground/90 whitespace-pre-wrap break-words">
-          {item.server}/{item.tool} ({item.status})
-        </div>
-        {item.durationMs != null && (
-          <div className="mt-1 text-[11px] text-muted-foreground font-mono">
-            {item.durationMs}ms
+      <ExpandableToolBlock
+        className={toolSpacing}
+        title="MCP tool"
+        summary={`${item.server}/${item.tool} (${item.status})`}
+        defaultExpanded={item.status === "inProgress"}
+        isActive={item.status === "inProgress"}
+        durationMs={item.durationMs}
+        statusTone={
+          item.status === "failed"
+            ? "danger"
+            : item.status === "completed"
+              ? "success"
+              : "neutral"
+        }
+        body={
+          <div className="space-y-3">
+            <div>
+              <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                Arguments
+              </div>
+              <CodeSnippet code={argumentsText} language="json" />
+            </div>
+            {resultText && (
+              <div>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Result
+                </div>
+                <CodeSnippet code={resultText} language="json" />
+              </div>
+            )}
+            {item.error?.message && (
+              <div className="text-xs text-danger whitespace-pre-wrap break-words">
+                {item.error.message}
+              </div>
+            )}
           </div>
-        )}
-        {item.error?.message && (
-          <div className="mt-2 text-xs text-danger whitespace-pre-wrap break-words">
-            {item.error.message}
+        }
+      />
+    );
+  },
+
+  imageGeneration: ({ item, toolSpacing }) => {
+    const resultImages = extractImageGenerationResultImages(item.result);
+    const resultText =
+      item.result !== undefined && item.result !== null && resultImages.length === 0
+        ? JSON.stringify(item.result, null, 2)
+        : null;
+
+    return (
+      <ExpandableToolBlock
+        className={toolSpacing}
+        title="Image generation"
+        summary={item.status}
+        defaultExpanded={item.status === "generating"}
+        isActive={item.status === "generating"}
+        statusTone={
+          item.status === "completed"
+            ? "success"
+            : item.status === "failed"
+              ? "danger"
+              : "neutral"
+        }
+        body={
+          <div className="space-y-3">
+            {item.revisedPrompt && (
+              <div>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Revised Prompt
+                </div>
+                <div className="text-sm text-foreground whitespace-pre-wrap break-words leading-relaxed">
+                  {item.revisedPrompt}
+                </div>
+              </div>
+            )}
+            {resultImages.length > 0 && (
+              <div className="space-y-3">
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Images
+                </div>
+                {resultImages.map((imageSrc, index) => (
+                  <div
+                    key={`image-generation-${String(index)}`}
+                    className="space-y-2"
+                  >
+                    {renderImagePreview(
+                      imageSrc,
+                      `Generated image ${String(index + 1)}`,
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+            {resultText && (
+              <div>
+                <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                  Result
+                </div>
+                <CodeSnippet code={resultText} language="json" />
+              </div>
+            )}
           </div>
-        )}
-        {item.result?.content && item.result.content.length > 0 && (
-          <div className="mt-2 text-xs text-muted-foreground">
-            Result parts: {item.result.content.length}
-          </div>
-        )}
-        <div className="mt-2 text-[11px] text-muted-foreground font-mono whitespace-pre-wrap break-all">
-          {argumentsText}
-        </div>
-      </div>
+        }
+      />
     );
   },
 
@@ -289,6 +580,33 @@ const ITEM_RENDERERS = {
                 <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                   Content Items
                 </div>
+                {item.contentItems && item.contentItems.length > 0 && (
+                  <div className="mb-3 space-y-3">
+                    {item.contentItems.map((contentItem, index) =>
+                      contentItem.type === "inputText" ? (
+                        <div
+                          key={`dynamic-content-${String(index)}`}
+                          className="rounded-lg border border-border bg-background/40 px-3 py-2 text-xs text-foreground whitespace-pre-wrap break-words"
+                        >
+                          {contentItem.text}
+                        </div>
+                      ) : (
+                        <div
+                          key={`dynamic-content-${String(index)}`}
+                          className="space-y-2"
+                        >
+                          {renderImagePreview(
+                            contentItem.imageUrl,
+                            "Dynamic tool image",
+                          )}
+                          <div className="font-mono text-[11px] text-muted-foreground break-all">
+                            {contentItem.imageUrl}
+                          </div>
+                        </div>
+                      ),
+                    )}
+                  </div>
+                )}
                 <CodeSnippet code={contentItemsText} language="json" />
               </div>
             )}
@@ -304,45 +622,86 @@ const ITEM_RENDERERS = {
   },
 
   collabAgentToolCall: ({ item, toolSpacing }) => (
-    <div
-      className={`${toolSpacing} rounded-lg border border-border bg-muted/20 px-3 py-2`}
-    >
-      <div className="text-[10px] text-muted-foreground font-mono mb-1 uppercase tracking-wider">
-        Collab tool
-      </div>
-      <div className="text-xs text-foreground/90 whitespace-pre-wrap break-words">
-        {item.tool} ({item.status})
-      </div>
-      <div className="mt-1 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
-        sender: {item.senderThreadId}
-      </div>
-      <div className="text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
-        receivers: {item.receiverThreadIds.join(", ") || "none"}
-      </div>
-      {item.prompt && (
-        <div className="mt-2 text-xs text-foreground/80 whitespace-pre-wrap break-words">
-          {item.prompt}
+    <ExpandableToolBlock
+      className={toolSpacing}
+      title="Collab tool"
+      summary={`${item.tool} (${item.status})`}
+      defaultExpanded={item.status === "inProgress"}
+      isActive={item.status === "inProgress"}
+      statusTone={
+        item.status === "failed"
+          ? "danger"
+          : item.status === "completed"
+            ? "success"
+            : "neutral"
+      }
+      body={
+        <div className="space-y-3">
+          <div className="text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
+            sender: {item.senderThreadId}
+          </div>
+          <div className="text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
+            receivers: {item.receiverThreadIds.join(", ") || "none"}
+          </div>
+          {item.prompt && (
+            <div className="text-xs text-foreground/80 whitespace-pre-wrap break-words">
+              {item.prompt}
+            </div>
+          )}
+          <div>
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Agent States
+            </div>
+            <CodeSnippet
+              code={JSON.stringify(item.agentsStates, null, 2)}
+              language="json"
+            />
+          </div>
         </div>
-      )}
-    </div>
+      }
+    />
   ),
 
-  imageView: ({ item }) => (
-    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-      Viewed image: {item.path}
-    </div>
+  imageView: ({ item, toolSpacing }) => (
+    <ExpandableToolBlock
+      className={toolSpacing}
+      title="Image view"
+      summary={item.path}
+      body={
+        <div className="space-y-3">
+          {renderImagePreview(item.path, "Viewed image")}
+          <div className="font-mono text-[11px] text-muted-foreground break-all">
+            {item.path}
+          </div>
+        </div>
+      }
+    />
   ),
 
-  enteredReviewMode: ({ item }) => (
-    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-      Entered review mode: {item.review}
-    </div>
+  enteredReviewMode: ({ item, toolSpacing }) => (
+    <ExpandableToolBlock
+      className={toolSpacing}
+      title="Review mode"
+      summary={`Entered review mode: ${item.review}`}
+      body={
+        <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words">
+          Review session: {item.review}
+        </div>
+      }
+    />
   ),
 
-  exitedReviewMode: ({ item }) => (
-    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-      Exited review mode: {item.review}
-    </div>
+  exitedReviewMode: ({ item, toolSpacing }) => (
+    <ExpandableToolBlock
+      className={toolSpacing}
+      title="Review mode"
+      summary={`Exited review mode: ${item.review}`}
+      body={
+        <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words">
+          Review session: {item.review}
+        </div>
+      }
+    />
   ),
 
   remoteTaskCreated: ({ item, toolSpacing }) => (
@@ -451,6 +810,8 @@ function renderItem(
       return ITEM_RENDERERS.mcpToolCall({ item, ...context });
     case "dynamicToolCall":
       return ITEM_RENDERERS.dynamicToolCall({ item, ...context });
+    case "imageGeneration":
+      return ITEM_RENDERERS.imageGeneration({ item, ...context });
     case "collabAgentToolCall":
       return ITEM_RENDERERS.collabAgentToolCall({ item, ...context });
     case "imageView":

@@ -6,6 +6,7 @@ const TOOL_BLOCK_TYPES: readonly UnifiedItem["type"][] = [
   "webSearch",
   "mcpToolCall",
   "dynamicToolCall",
+  "imageGeneration",
   "collabAgentToolCall",
   "remoteTaskCreated",
   "forkedFromConversation",

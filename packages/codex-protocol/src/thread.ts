@@ -402,6 +402,16 @@ export const DynamicToolCallItemSchema = z
   })
   .passthrough();
 
+export const ImageGenerationItemSchema = z
+  .object({
+    type: z.literal("imageGeneration"),
+    id: NonEmptyStringSchema,
+    status: NonEmptyStringSchema,
+    revisedPrompt: z.union([z.string(), z.null()]).optional(),
+    result: z.union([JsonValueSchema, z.null()]).optional()
+  })
+  .passthrough();
+
 export const CollabAgentToolSchema = z.enum([
   "spawnAgent",
   "sendInput",
@@ -481,6 +491,7 @@ const KnownTurnItemSchema = z.discriminatedUnion("type", [
   WebSearchItemSchema,
   McpToolCallItemSchema,
   DynamicToolCallItemSchema,
+  ImageGenerationItemSchema,
   CollabAgentToolCallItemSchema,
   ImageViewItemSchema,
   EnteredReviewModeItemSchema,
@@ -506,6 +517,7 @@ const KNOWN_TURN_ITEM_TYPE_SET = new Set<string>([
   "webSearch",
   "mcpToolCall",
   "dynamicToolCall",
+  "imageGeneration",
   "collabAgentToolCall",
   "imageView",
   "enteredReviewMode",
