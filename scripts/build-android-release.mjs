@@ -14,11 +14,30 @@ const defaultDebugKeystorePath = path.join(
   ".android",
   "debug.keystore",
 );
-const explicitKeystorePath = process.env.ANDROID_KEYSTORE_PATH ?? null;
+function firstNonEmpty(...values) {
+  for (const value of values) {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.length > 0) {
+        return trimmed;
+      }
+    }
+  }
+  return null;
+}
+
+const explicitKeystorePath = firstNonEmpty(process.env.ANDROID_KEYSTORE_PATH);
 const keystorePath = explicitKeystorePath ?? defaultDebugKeystorePath;
-const keyAlias = process.env.ANDROID_KEY_ALIAS ?? "androiddebugkey";
-const keystorePassword = process.env.ANDROID_KEYSTORE_PASSWORD ?? "android";
-const keyPassword = process.env.ANDROID_KEY_PASSWORD ?? keystorePassword;
+const usingReleaseKeystore = explicitKeystorePath !== null;
+const keyAlias = usingReleaseKeystore
+  ? firstNonEmpty(process.env.ANDROID_KEY_ALIAS) ?? "androiddebugkey"
+  : "androiddebugkey";
+const keystorePassword = usingReleaseKeystore
+  ? firstNonEmpty(process.env.ANDROID_KEYSTORE_PASSWORD) ?? "android"
+  : "android";
+const keyPassword = usingReleaseKeystore
+  ? firstNonEmpty(process.env.ANDROID_KEY_PASSWORD) ?? keystorePassword
+  : "android";
 const unsignedApkPath = path.join(
   repoRoot,
   "apps/tauri/src-tauri/gen/android/app/build/outputs/apk/universal/release/app-universal-release-unsigned.apk",
