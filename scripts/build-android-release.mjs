@@ -106,6 +106,7 @@ if (!existsSync(apksignerPath)) {
   throw new Error(`apksigner not found at ${apksignerPath}`);
 }
 
+await runCommand("bun", ["run", "prepare:workspace-dist"]);
 await runCommand("bun", ["run", "--filter", "@farfield/tauri", "build:sidecars"]);
 
 await runCommand(
