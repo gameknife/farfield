@@ -104,9 +104,12 @@ jobs:
         run: bun install --frozen-lockfile
 
       - name: Prepare Android release keystore
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
         shell: bash
         run: |
+          if [ -z "${ANDROID_KEYSTORE_BASE64}" ]; then
+            exit 0
+          fi
+
           KEYSTORE_PATH="$RUNNER_TEMP/android-release.keystore"
           printf '%s' "${ANDROID_KEYSTORE_BASE64}" | base64 --decode > "$KEYSTORE_PATH"
           echo "ANDROID_KEYSTORE_PATH=$KEYSTORE_PATH" >> "$GITHUB_ENV"
