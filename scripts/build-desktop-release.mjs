@@ -94,11 +94,20 @@ if (currentPlatform === "macos") {
   );
   await runCommand("bun", ["run", "--filter", "@farfield/web", "build"]);
   await runCommand("bun", ["run", "--filter", "@farfield/tauri", "build:sidecars"]);
+  // AppImage is the portable format that works on Arch / NixOS / any distro
+  // without a native package. linuxdeploy on ubuntu-22.04 runners can fail
+  // when FUSE isn't available and when it tries to strip binaries, so opt
+  // into APPIMAGE_EXTRACT_AND_RUN (skip FUSE) and NO_STRIP (skip strip).
   await runCommand(
     "bunx",
-    ["tauri", "build", "--bundles", "deb", "rpm", "--ci"],
+    ["tauri", "build", "--bundles", "deb", "rpm", "appimage", "--ci"],
     {
       cwd: path.join(repoRoot, "apps/tauri"),
+      env: {
+        ...process.env,
+        APPIMAGE_EXTRACT_AND_RUN: "1",
+        NO_STRIP: "true",
+      },
     },
   );
   console.log(

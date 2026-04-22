@@ -160,6 +160,7 @@ jobs:
           files: |
             release-artifacts/**/*.deb
             release-artifacts/**/*.rpm
+            release-artifacts/**/*.AppImage
             release-artifacts/**/*.msi
             release-artifacts/**/*-setup.exe
             release-artifacts/**/*.app.tar.gz
