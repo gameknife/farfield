@@ -169,22 +169,46 @@ if (currentPlatform === "macos") {
         const portableTopName = `${productName}_${version}_linux-x86_64`;
         const portableTarName = `${portableTopName}.tar.gz`;
         await runCommand("mkdir", ["-p", portableDir]);
-        // Wrap the deb's data/ tree (usr/bin, usr/lib/..., usr/share/...)
-        // under a single top-level directory so extracting the tarball
-        // produces `${portableTopName}/usr/bin/farfield_tauri`, which
-        // users can symlink into PATH or run directly on Arch / NixOS.
+
+        // Copy the deb's data/ tree into a scratch location so the
+        // self-contained-ification step doesn't contaminate the source
+        // tree that the .deb artifact came from.
+        const stagingRoot = path.join(portableDir, "__staging");
+        await runCommand("rm", ["-rf", stagingRoot]);
+        await runCommand("mkdir", ["-p", stagingRoot]);
+        await runCommand("cp", ["-a", `${installRoot}/.`, stagingRoot]);
+
+        // Bundle webkit + transitive shared-library deps + WebKit helper
+        // processes + GIO modules into `usr/lib/farfield/`, then rewrite
+        // the binary as a launcher that points the runtime at them. This
+        // is what makes the tarball work on SteamOS / minimal Arch.
+        await runCommand(
+          "node",
+          [
+            path.join(repoRoot, "scripts/bundle-linux-portable.mjs"),
+            stagingRoot,
+            "usr/bin/farfield_tauri",
+            "farfield",
+          ],
+        );
+
+        // Wrap the (now self-contained) tree under a single top-level
+        // directory so extracting the tarball produces
+        // `${portableTopName}/usr/bin/farfield_tauri`, runnable via a
+        // simple `./usr/bin/farfield_tauri`.
         await runCommand(
           "tar",
           [
             "-czf",
             path.join(portableDir, portableTarName),
             "-C",
-            path.join(debBundleDir, installRootName),
+            path.dirname(stagingRoot),
             "--transform",
-            `s,^data,${portableTopName},`,
-            "data",
+            `s,^__staging,${portableTopName},`,
+            "__staging",
           ],
         );
+        await runCommand("rm", ["-rf", stagingRoot]);
         console.log(`Portable tarball ready at ${portableDir}/${portableTarName}`);
       }
     }
