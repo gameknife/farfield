@@ -1,5 +1,11 @@
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -145,6 +151,29 @@ if (!existsSync(androidGenDir)) {
       },
     },
   );
+}
+
+// Tauri's default build.gradle.kts sets usesCleartextTraffic="false" for
+// release builds, which breaks HTTP (ip:port) network calls from the APK.
+// Force every manifestPlaceholders usesCleartextTraffic entry to "true"
+// so release APKs can talk to plain-HTTP endpoints.
+const gradleKtsPath = path.join(androidGenDir, "app/build.gradle.kts");
+if (existsSync(gradleKtsPath)) {
+  const original = readFileSync(gradleKtsPath, "utf8");
+  const patched = original.replace(
+    /(manifestPlaceholders\["usesCleartextTraffic"\]\s*=\s*)"false"/g,
+    '$1"true"',
+  );
+  if (patched !== original) {
+    writeFileSync(gradleKtsPath, patched);
+    console.log(
+      "Patched build.gradle.kts: usesCleartextTraffic=true everywhere",
+    );
+  } else {
+    console.log(
+      "build.gradle.kts already has usesCleartextTraffic=true (or pattern did not match)",
+    );
+  }
 }
 
 await runCommand(
