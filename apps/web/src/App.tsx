@@ -469,6 +469,105 @@ function buildOptimisticThreadSummary(
   };
 }
 
+function buildThreadPreviewFromReadThread(
+  thread: ReadThreadResponse["thread"],
+): string {
+  const title = thread.title?.trim();
+  if (title) {
+    return title;
+  }
+
+  for (const turn of thread.turns) {
+    for (const item of turn.items) {
+      switch (item.type) {
+        case "userMessage":
+        case "steeringUserMessage":
+          for (const part of item.content) {
+            switch (part.type) {
+              case "text": {
+                const text = part.text.trim();
+                if (text) {
+                  return text;
+                }
+                break;
+              }
+              case "image":
+              case "localImage":
+              case "skill":
+              case "mention":
+                break;
+            }
+          }
+          break;
+        case "agentMessage": {
+          const text = item.text.trim();
+          if (text) {
+            return text;
+          }
+          break;
+        }
+        case "error": {
+          const text = item.message.trim();
+          if (text) {
+            return text;
+          }
+          break;
+        }
+        case "plan": {
+          const text = item.text.trim();
+          if (text) {
+            return text;
+          }
+          break;
+        }
+        case "todoList":
+        case "planImplementation":
+        case "userInputResponse":
+        case "reasoning":
+        case "commandExecution":
+        case "fileChange":
+        case "contextCompaction":
+        case "webSearch":
+        case "mcpToolCall":
+        case "dynamicToolCall":
+        case "collabAgentToolCall":
+        case "imageView":
+        case "enteredReviewMode":
+        case "exitedReviewMode":
+        case "remoteTaskCreated":
+        case "modelChanged":
+        case "forkedFromConversation":
+          break;
+      }
+    }
+  }
+
+  return `thread ${thread.id.slice(0, 8)}`;
+}
+
+function buildThreadSummaryFromReadThread(
+  thread: ReadThreadResponse["thread"],
+): Thread {
+  const createdAt = normalizeUnixTimestampSeconds(
+    thread.createdAt ?? thread.updatedAt ?? 0,
+  );
+  const updatedAt = normalizeUnixTimestampSeconds(thread.updatedAt ?? createdAt);
+
+  return {
+    id: thread.id,
+    provider: thread.provider,
+    preview: buildThreadPreviewFromReadThread(thread),
+    createdAt,
+    updatedAt,
+    ...(thread.title !== undefined ? { title: thread.title } : {}),
+    ...(thread.cwd ? { cwd: thread.cwd } : {}),
+    ...(thread.source ? { source: thread.source } : {}),
+    isGenerating: isThreadGeneratingState(thread),
+    waitingOnApproval: false,
+    waitingOnUserInput: false,
+  };
+}
+
 function mergeIncomingThreads(
   nextThreads: Thread[],
   previousThreads: Thread[],
@@ -2509,10 +2608,13 @@ export function App(): React.JSX.Element {
         const nextIsGenerating = live.conversationState
           ? isThreadGeneratingState(live.conversationState)
           : isThreadGeneratingState(read.thread);
+        const selectedSummary = buildThreadSummaryFromReadThread(read.thread);
+        let sawThread = false;
         const nextThreads = previousThreads.map((threadSummary) => {
           if (threadSummary.id !== read.thread.id) {
             return threadSummary;
           }
+          sawThread = true;
 
           const nextUpdatedAt =
             typeof read.thread.updatedAt === "number"
@@ -2539,6 +2641,9 @@ export function App(): React.JSX.Element {
             ...(nextTitle !== undefined ? { title: nextTitle } : {}),
           };
         });
+        if (!sawThread) {
+          nextThreads.push(selectedSummary);
+        }
 
         const sortedThreads = sortThreadsByRecency(nextThreads);
         const nextSignature = buildThreadsSignature(sortedThreads);
