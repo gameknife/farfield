@@ -17,6 +17,8 @@ import {
   ModelChangedItemSchema,
   parseThreadConversationState,
   parseThreadStreamStateChangedBroadcast,
+  parseCommandExecutionRequestApprovalResponse,
+  parseFileChangeRequestApprovalResponse,
   parseUserInputResponsePayload,
   type IpcFrame,
   type IpcRequestFrame,
@@ -55,6 +57,11 @@ type StreamSnapshotOrigin = "stream" | "readThreadWithTurns" | "readThread";
 type ThreadTurn = z.infer<typeof ThreadTurnSchema>;
 type TurnItem = z.infer<typeof TurnItemSchema>;
 
+type PendingAppServerRequestEntry = {
+  request: ThreadConversationRequest;
+  seenInAuthoritativeRead: boolean;
+};
+
 interface PendingThreadRefresh {
   sourceClientId: string | null;
   origin: StreamSnapshotOrigin;
@@ -82,6 +89,11 @@ export interface CodexAppFrameEvent {
   frame: AppServerServerNotification | AppServerServerRequest;
   method: string;
   threadId: string | null;
+}
+
+export interface CodexAppServerRequestEvent {
+  threadId: string;
+  request: ThreadConversationRequest;
 }
 
 export interface CodexAgentOptions {
@@ -123,6 +135,10 @@ export class CodexAgentAdapter implements AgentAdapter {
   private readonly reconnectDelayMs: number;
 
   private readonly threadOwnerById = new Map<string, string>();
+  private readonly pendingAppServerRequestsByThreadId = new Map<
+    string,
+    PendingAppServerRequestEntry[]
+  >();
   private readonly streamEventsByThreadId = new Map<string, IpcFrame[]>();
   private readonly activeTurnIdByThreadId = new Map<string, string>();
   private readonly pendingCollaborationModeByThreadId = new Map<
@@ -148,6 +164,9 @@ export class CodexAgentAdapter implements AgentAdapter {
   >();
   private readonly appFrameListeners = new Set<
     (event: CodexAppFrameEvent) => void
+  >();
+  private readonly appServerRequestListeners = new Set<
+    (event: CodexAppServerRequestEvent) => void
   >();
   private readonly pendingThreadRefreshByThreadId = new Map<
     string,
@@ -290,7 +309,8 @@ export class CodexAgentAdapter implements AgentAdapter {
       void this.handleServerNotification(notification);
     });
     this.appClient.onServerRequest((request) => {
-      void this.handleServerRequest(request);
+      const threadId = this.capturePendingAppServerRequest(request);
+      void this.handleServerRequest(request, threadId);
     });
   }
 
@@ -305,6 +325,15 @@ export class CodexAgentAdapter implements AgentAdapter {
     this.appFrameListeners.add(listener);
     return () => {
       this.appFrameListeners.delete(listener);
+    };
+  }
+
+  public onAppServerRequest(
+    listener: (event: CodexAppServerRequestEvent) => void,
+  ): () => void {
+    this.appServerRequestListeners.add(listener);
+    return () => {
+      this.appServerRequestListeners.delete(listener);
     };
   }
 
@@ -522,7 +551,10 @@ export class CodexAgentAdapter implements AgentAdapter {
       }
     }
     const parsedThread = this.applyPendingCollaborationMode(
-      parseThreadConversationState(result.thread),
+      this.mergePendingAppServerRequests(
+        parseThreadConversationState(result.thread),
+        { authoritativeRead: true },
+      ),
     );
     const existingSnapshot = this.streamSnapshotByThreadId.get(input.threadId);
     const shouldStoreSnapshot =
@@ -573,6 +605,9 @@ export class CodexAgentAdapter implements AgentAdapter {
           threadId: input.threadId,
           expectedTurnId: activeTurnId,
           input: [{ type: "text", text }],
+          ...(input.approvalPolicy
+            ? { approvalPolicy: input.approvalPolicy }
+            : {}),
         });
         return;
       }
@@ -602,6 +637,9 @@ export class CodexAgentAdapter implements AgentAdapter {
         ...(input.effort ? { effort: input.effort } : {}),
         ...(pendingCollaborationMode !== undefined
           ? { collaborationMode: pendingCollaborationMode }
+          : {}),
+        ...(input.approvalPolicy
+          ? { approvalPolicy: input.approvalPolicy }
           : {}),
         attachments: [],
       });
@@ -682,32 +720,59 @@ export class CodexAgentAdapter implements AgentAdapter {
   ): Promise<{ ownerClientId: string; requestId: UserInputRequestId }> {
     this.ensureCodexAvailable();
     const parsedResponse = parseUserInputResponsePayload(input.response);
-    const ownerClientIdForResult =
-      this.resolveVisibleOwnerClientId(input.threadId, input.ownerClientId) ??
-      "app-server";
-
-    const threadForRequest = await this.runThreadOperationWithResumeRetry(
+    const ownerClientId = this.resolveVisibleOwnerClientId(
       input.threadId,
-      () => this.appClient.readThread(input.threadId, false),
+      input.ownerClientId,
     );
-    const parsedThreadForRequest = this.applyPendingCollaborationMode(
-      parseThreadConversationState(threadForRequest.thread),
-    );
-    const pendingRequest = findPendingRequestWithId(
-      parsedThreadForRequest,
-      input.requestId,
-    );
+    const ownerClientIdForResult = ownerClientId ?? "app-server";
+    const request = this.findPendingRequest(input.threadId, input.requestId);
 
-    if (!pendingRequest) {
-      throw new Error(
-        `Pending request ${String(input.requestId)} is not present in app-server thread state for thread ${input.threadId}`,
-      );
+    switch (request?.method) {
+      case "item/commandExecution/requestApproval": {
+        const approvalResponse =
+          parseCommandExecutionRequestApprovalResponse(parsedResponse);
+        await this.ipcClient.sendRequestAndWait(
+          "thread-follower-command-approval-decision",
+          {
+            conversationId: input.threadId,
+            requestId: input.requestId,
+            decision: approvalResponse.decision,
+          },
+          {
+            ...(ownerClientId ? { targetClientId: ownerClientId } : {}),
+            version: 1,
+          },
+        );
+        break;
+      }
+
+      case "item/fileChange/requestApproval": {
+        const approvalResponse =
+          parseFileChangeRequestApprovalResponse(parsedResponse);
+        await this.ipcClient.sendRequestAndWait(
+          "thread-follower-file-approval-decision",
+          {
+            conversationId: input.threadId,
+            requestId: input.requestId,
+            decision: approvalResponse.decision,
+          },
+          {
+            ...(ownerClientId ? { targetClientId: ownerClientId } : {}),
+            version: 1,
+          },
+        );
+        break;
+      }
+
+      default:
+        await this.runAppServerCall(() =>
+          this.appClient.submitUserInput(input.requestId, parsedResponse),
+        );
+        break;
     }
-
-    await this.runAppServerCall(() =>
-      this.appClient.submitUserInput(input.requestId, parsedResponse),
-    );
-    await this.refreshThreadFromAppServer(
+    this.removePendingAppServerRequest(input.threadId, input.requestId);
+    this.notifyThreadStateChanged(input.threadId);
+    this.scheduleThreadRefresh(
       input.threadId,
       ownerClientIdForResult,
       "readThreadWithTurns",
@@ -719,6 +784,24 @@ export class CodexAgentAdapter implements AgentAdapter {
     };
   }
 
+  private findPendingRequest(
+    threadId: string,
+    requestId: UserInputRequestId,
+  ): ThreadConversationRequest | null {
+    const cachedEntries = this.pendingAppServerRequestsByThreadId.get(threadId);
+    const cachedRequest = cachedEntries?.find((entry) =>
+      requestIdsMatch(entry.request.id, requestId),
+    )?.request;
+    if (cachedRequest) {
+      return cachedRequest;
+    }
+
+    const snapshotRequest = this.streamSnapshotByThreadId
+      .get(threadId)
+      ?.requests.find((request) => requestIdsMatch(request.id, requestId));
+    return snapshotRequest ?? null;
+  }
+
   public async readLiveState(threadId: string): Promise<AgentThreadLiveState> {
     const startedAt = performance.now();
     try {
@@ -727,7 +810,7 @@ export class CodexAgentAdapter implements AgentAdapter {
           this.threadOwnerById.get(threadId) ??
           this.lastKnownOwnerClientId ??
           null,
-        conversationState: this.streamSnapshotByThreadId.get(threadId) ?? null,
+        conversationState: this.readMergedLiveSnapshot(threadId),
         liveStateError: this.liveStateErrorByThreadId.get(threadId) ?? null,
       };
     } finally {
@@ -819,6 +902,142 @@ export class CodexAgentAdapter implements AgentAdapter {
     }
   }
 
+  private emitAppServerRequest(event: CodexAppServerRequestEvent): void {
+    for (const listener of this.appServerRequestListeners) {
+      listener(event);
+    }
+  }
+
+  private capturePendingAppServerRequest(
+    request: AppServerServerRequest,
+  ): string | null {
+    const parsedRequest = ThreadConversationRequestSchema.safeParse(request);
+    if (!parsedRequest.success) {
+      logger.error(
+        {
+          method: request.method,
+          issues: parsedRequest.error.issues,
+        },
+        "codex-app-server-request-parse-failed",
+      );
+      return null;
+    }
+
+    const threadId = extractThreadIdFromConversationRequest(parsedRequest.data);
+    if (!threadId) {
+      return null;
+    }
+
+    this.upsertPendingAppServerRequest(threadId, parsedRequest.data);
+    this.notifyThreadStateChanged(threadId);
+    this.emitAppServerRequest({
+      threadId,
+      request: parsedRequest.data,
+    });
+    return threadId;
+  }
+
+  private upsertPendingAppServerRequest(
+    threadId: string,
+    request: ThreadConversationRequest,
+  ): void {
+    const current = this.pendingAppServerRequestsByThreadId.get(threadId) ?? [];
+    const next = current.filter(
+      (entry) => !requestIdsMatch(entry.request.id, request.id),
+    );
+    if (request.completed === true) {
+      if (next.length === 0) {
+        this.pendingAppServerRequestsByThreadId.delete(threadId);
+        return;
+      }
+      this.pendingAppServerRequestsByThreadId.set(threadId, next);
+      return;
+    }
+    next.push({
+      request,
+      seenInAuthoritativeRead: false,
+    });
+    this.pendingAppServerRequestsByThreadId.set(threadId, next);
+  }
+
+  private removePendingAppServerRequest(
+    threadId: string,
+    requestId: UserInputRequestId,
+  ): void {
+    const current = this.pendingAppServerRequestsByThreadId.get(threadId);
+    if (!current) {
+      return;
+    }
+
+    const next = current.filter((entry) =>
+      !requestIdsMatch(entry.request.id, requestId),
+    );
+    if (next.length === 0) {
+      this.pendingAppServerRequestsByThreadId.delete(threadId);
+      return;
+    }
+
+    this.pendingAppServerRequestsByThreadId.set(threadId, next);
+  }
+
+  private mergePendingAppServerRequests(
+    state: ThreadConversationState,
+    options: { authoritativeRead: boolean } = { authoritativeRead: false },
+  ): ThreadConversationState {
+    const cachedEntries = this.pendingAppServerRequestsByThreadId.get(state.id);
+    if (!cachedEntries || cachedEntries.length === 0) {
+      return state;
+    }
+
+    const mergedRequests = [...state.requests];
+    const nextCachedEntries: PendingAppServerRequestEntry[] = [];
+    for (const cachedEntry of cachedEntries) {
+      const authoritativeRequest = state.requests.find((request) =>
+        requestIdsMatch(request.id, cachedEntry.request.id),
+      );
+
+      if (authoritativeRequest) {
+        if (authoritativeRequest.completed !== true) {
+          nextCachedEntries.push({
+            request: authoritativeRequest,
+            seenInAuthoritativeRead:
+              cachedEntry.seenInAuthoritativeRead ||
+              options.authoritativeRead,
+          });
+        }
+        continue;
+      }
+
+      if (options.authoritativeRead && cachedEntry.seenInAuthoritativeRead) {
+        continue;
+      }
+
+      nextCachedEntries.push(cachedEntry);
+      mergedRequests.push(cachedEntry.request);
+    }
+
+    if (nextCachedEntries.length === 0) {
+      this.pendingAppServerRequestsByThreadId.delete(state.id);
+    } else {
+      this.pendingAppServerRequestsByThreadId.set(state.id, nextCachedEntries);
+    }
+
+    return {
+      ...state,
+      requests: mergedRequests,
+    };
+  }
+
+  private readMergedLiveSnapshot(
+    threadId: string,
+  ): ThreadConversationState | null {
+    const snapshot = this.streamSnapshotByThreadId.get(threadId);
+    if (!snapshot) {
+      return null;
+    }
+    return this.mergePendingAppServerRequests(snapshot);
+  }
+
   private async handleServerNotification(
     notification: AppServerServerNotification,
   ): Promise<void> {
@@ -843,10 +1062,14 @@ export class CodexAgentAdapter implements AgentAdapter {
 
   private async handleServerRequest(
     request: AppServerServerRequest,
+    threadId: string | null,
   ): Promise<void> {
+    if (!threadId) {
+      return;
+    }
     await this.refreshThreadFromAppServer(
-      request.params.threadId,
-      this.resolveVisibleOwnerClientId(request.params.threadId),
+      threadId,
+      this.resolveVisibleOwnerClientId(threadId),
       "readThreadWithTurns",
     );
     this.emitAppFrame({
@@ -854,7 +1077,7 @@ export class CodexAgentAdapter implements AgentAdapter {
       kind: "request",
       frame: request,
       method: request.method,
-      threadId: request.params.threadId,
+      threadId,
     });
   }
 
@@ -2209,6 +2432,25 @@ function requestIdsMatch(
   return `${left}` === `${right}`;
 }
 
+function extractThreadIdFromConversationRequest(
+  request: ThreadConversationRequest,
+): string | null {
+  switch (request.method) {
+    case "item/commandExecution/requestApproval":
+    case "item/fileChange/requestApproval":
+    case "item/tool/requestUserInput":
+    case "item/tool/call":
+    case "item/plan/requestImplementation":
+      return request.params.threadId;
+    case "applyPatchApproval":
+    case "execCommandApproval":
+      return request.params.conversationId;
+    case "account/chatgptAuthTokens/refresh":
+      return null;
+  }
+  return null;
+}
+
 function isTerminalTurnStatus(status: string): boolean {
   const normalized = status.trim().toLowerCase();
   return (
@@ -2238,21 +2480,6 @@ function findActiveTurnId(state: ThreadConversationState): string | null {
     }
   }
 
-  return null;
-}
-
-function findPendingRequestWithId(
-  state: ThreadConversationState,
-  requestId: UserInputRequestId,
-): ThreadConversationRequest | null {
-  for (const request of state.requests) {
-    if (request.completed === true) {
-      continue;
-    }
-    if (requestIdsMatch(request.id, requestId)) {
-      return request;
-    }
-  }
   return null;
 }
 
@@ -2343,29 +2570,42 @@ function mergeTurnItems(
   currentItems: TurnItem[],
   nextItems: TurnItem[],
 ): TurnItem[] {
-  const nextItemsById = new Map(nextItems.map((item) => [item.id, item]));
+  const nextItemsById = new Map(nextItems.map((item) => [turnItemKey(item), item]));
   const mergedItems: TurnItem[] = [];
   const seenIds = new Set<string>();
 
   for (const currentItem of currentItems) {
-    const nextItem = nextItemsById.get(currentItem.id);
+    const currentItemId = turnItemKey(currentItem);
+    const nextItem = nextItemsById.get(currentItemId);
     if (!nextItem) {
       mergedItems.push(currentItem);
       continue;
     }
 
     mergedItems.push(mergeTurnItem(currentItem, nextItem));
-    seenIds.add(currentItem.id);
+    seenIds.add(currentItemId);
   }
 
   for (const nextItem of nextItems) {
-    if (seenIds.has(nextItem.id)) {
+    if (seenIds.has(turnItemKey(nextItem))) {
       continue;
     }
     mergedItems.push(nextItem);
   }
 
   return mergedItems;
+}
+
+function turnItemKey(item: TurnItem): string {
+  switch (item.type) {
+    case "custom_tool_call":
+    case "custom_tool_call_output":
+    case "function_call":
+    case "function_call_output":
+      return item.id ?? item.call_id;
+    default:
+      return item.id;
+  }
 }
 
 function mergeTurnItem(currentItem: TurnItem, nextItem: TurnItem): TurnItem {
@@ -2813,7 +3053,7 @@ function updateThreadItem(
   }
 
   const nextItems = [...turn.items];
-  const itemIndex = nextItems.findIndex((item) => item.id === itemId);
+  const itemIndex = nextItems.findIndex((item) => turnItemKey(item) === itemId);
   if (itemIndex === -1) {
     return null;
   }
@@ -2851,7 +3091,10 @@ function upsertTurnItem(
   }
 
   const nextItems = [...turn.items];
-  const itemIndex = nextItems.findIndex((item) => item.id === nextItem.id);
+  const nextItemId = turnItemKey(nextItem);
+  const itemIndex = nextItems.findIndex(
+    (item) => turnItemKey(item) === nextItemId,
+  );
   if (itemIndex === -1) {
     nextItems.push(nextItem);
   } else {

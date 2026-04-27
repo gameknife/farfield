@@ -19,6 +19,7 @@ import {
   type UnifiedCommandResult,
   type UnifiedFeatureAvailability,
   type UnifiedFeatureId,
+  type UnifiedApprovalPolicy,
   type UnifiedProviderId,
   type UnifiedThread,
   type UnifiedThreadRequestResponse,
@@ -726,7 +727,7 @@ export async function createThread(input?: {
   modelProvider?: string;
   personality?: string;
   sandbox?: string;
-  approvalPolicy?: string;
+  approvalPolicy?: UnifiedApprovalPolicy;
   ephemeral?: boolean;
 }): Promise<z.infer<typeof CreateThreadResponseSchema>> {
   const provider = input?.agentId ?? "codex";
@@ -852,6 +853,7 @@ export async function sendMessage(input: {
     };
   };
   isSteering?: boolean;
+  approvalPolicy?: UnifiedApprovalPolicy;
 }): Promise<void> {
   const result = await runUnifiedCommand({
     kind: "sendMessage",
@@ -888,6 +890,9 @@ export async function sendMessage(input: {
       : {}),
     ...(typeof input.isSteering === "boolean"
       ? { isSteering: input.isSteering }
+      : {}),
+    ...(input.approvalPolicy
+      ? { approvalPolicy: input.approvalPolicy }
       : {}),
   });
 

@@ -352,6 +352,126 @@ describe("codex-protocol schemas", () => {
     expect(item?.type).toBe("remoteTaskCreated");
   });
 
+  it("parses snapshot broadcast when turn includes dynamicToolCall item", () => {
+    const parsed = parseThreadStreamStateChangedBroadcast({
+      type: "broadcast",
+      method: "thread-stream-state-changed",
+      sourceClientId: "client-123",
+      version: 4,
+      params: {
+        conversationId: "thread-123",
+        type: "thread-stream-state-changed",
+        version: 4,
+        change: {
+          type: "snapshot",
+          conversationState: {
+            id: "thread-123",
+            turns: [
+              {
+                status: "inProgress",
+                items: [
+                  {
+                    id: "dynamic-tool-call-1",
+                    type: "dynamicToolCall",
+                    tool: "imagegen",
+                    arguments: {
+                      prompt: "draw a chart"
+                    },
+                    status: "completed",
+                    contentItems: [
+                      {
+                        type: "inputText",
+                        text: "created image"
+                      },
+                      {
+                        type: "inputImage",
+                        imageUrl: "file:///tmp/chart.png"
+                      }
+                    ],
+                    success: true,
+                    durationMs: 42
+                  }
+                ]
+              }
+            ],
+            requests: []
+          }
+        }
+      }
+    });
+
+    expect(parsed.params.change.type).toBe("snapshot");
+    const item = parsed.params.change.type === "snapshot"
+      ? parsed.params.change.conversationState.turns[0]?.items[0]
+      : null;
+    expect(item?.type).toBe("dynamicToolCall");
+  });
+
+  it("parses snapshot broadcast with response custom tool call items", () => {
+    const parsed = parseThreadStreamStateChangedBroadcast({
+      type: "broadcast",
+      method: "thread-stream-state-changed",
+      sourceClientId: "client-123",
+      version: 4,
+      params: {
+        conversationId: "thread-123",
+        type: "thread-stream-state-changed",
+        version: 4,
+        change: {
+          type: "snapshot",
+          conversationState: {
+            id: "thread-123",
+            turns: [
+              {
+                status: "inProgress",
+                items: [
+                  {
+                    id: "empty-user-message",
+                    type: "userMessage"
+                  },
+                  {
+                    type: "custom_tool_call",
+                    call_id: "call-1",
+                    name: "apply_patch",
+                    input: "*** Begin Patch",
+                    status: "completed"
+                  },
+                  {
+                    type: "custom_tool_call_output",
+                    call_id: "call-1",
+                    output: "{\"output\":\"ok\"}"
+                  },
+                  {
+                    type: "function_call",
+                    call_id: "call-2",
+                    name: "exec_command",
+                    arguments: "{\"cmd\":\"date\"}"
+                  },
+                  {
+                    type: "function_call_output",
+                    call_id: "call-2",
+                    output: "today"
+                  }
+                ]
+              }
+            ],
+            requests: []
+          }
+        }
+      }
+    });
+
+    expect(parsed.params.change.type).toBe("snapshot");
+    const items = parsed.params.change.type === "snapshot"
+      ? parsed.params.change.conversationState.turns[0]?.items
+      : [];
+    expect(items?.[0]?.type).toBe("userMessage");
+    expect(items?.[1]?.type).toBe("custom_tool_call");
+    expect(items?.[2]?.type).toBe("custom_tool_call_output");
+    expect(items?.[3]?.type).toBe("function_call");
+    expect(items?.[4]?.type).toBe("function_call_output");
+  });
+
   it("rejects invalid patch value for remove operation", () => {
     expect(() =>
       parseThreadStreamStateChangedBroadcast({
@@ -593,6 +713,33 @@ describe("codex-protocol schemas", () => {
                   path: "file.txt"
                 }
               ],
+              aggregatedOutput: "hello",
+              exitCode: 0,
+              durationMs: 5
+            }
+          ]
+        }
+      ],
+      requests: []
+    });
+
+    expect(parsed.turns[0]?.items[0]?.type).toBe("commandExecution");
+  });
+
+  it("parses thread conversation state with null command process id", () => {
+    const parsed = parseThreadConversationState({
+      id: "thread-123",
+      turns: [
+        {
+          status: "completed",
+          items: [
+            {
+              id: "item-cmd-null-process",
+              type: "commandExecution",
+              command: "echo hello",
+              cwd: "/tmp",
+              processId: null,
+              status: "completed",
               aggregatedOutput: "hello",
               exitCode: 0,
               durationMs: 5

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   UnifiedCommandSchema,
   UNIFIED_COMMAND_KINDS,
@@ -303,6 +303,33 @@ function createCommand(
 }
 
 describe("unified provider adapters", () => {
+  it("passes approvalPolicy through sendMessage", async () => {
+    const sendMessage = vi.fn(
+      async (_input: Parameters<AgentAdapter["sendMessage"]>[0]) => undefined,
+    );
+    const adapter: AgentAdapter = {
+      ...createCodexAdapter(),
+      sendMessage,
+    };
+    const unified = new AgentUnifiedProviderAdapter("codex", adapter);
+
+    await unified.execute(
+      UnifiedCommandSchema.parse({
+        kind: "sendMessage",
+        provider: "codex",
+        threadId: SAMPLE_THREAD.id,
+        text: "open calculator",
+        approvalPolicy: "untrusted",
+      }),
+    );
+
+    expect(sendMessage).toHaveBeenCalledWith({
+      threadId: SAMPLE_THREAD.id,
+      text: "open calculator",
+      approvalPolicy: "untrusted",
+    });
+  });
+
   it("has full command handler coverage for both providers", () => {
     const codexUnified = new AgentUnifiedProviderAdapter(
       "codex",
@@ -698,6 +725,29 @@ describe("unified provider adapters", () => {
                 success: true,
                 durationMs: 17,
               },
+              {
+                type: "custom_tool_call",
+                call_id: "call-custom-1",
+                name: "apply_patch",
+                input: "*** Begin Patch",
+                status: "completed",
+              },
+              {
+                type: "custom_tool_call_output",
+                call_id: "call-custom-1",
+                output: "{\"output\":\"ok\"}",
+              },
+              {
+                type: "function_call",
+                call_id: "call-function-1",
+                name: "exec_command",
+                arguments: "{\"cmd\":\"date\"}",
+              },
+              {
+                type: "function_call_output",
+                call_id: "call-function-1",
+                output: "today",
+              },
             ],
           },
         ],
@@ -734,5 +784,37 @@ describe("unified provider adapters", () => {
         ? dynamicToolItem.tool
         : null,
     ).toBe("browser.open");
+
+    const customToolItem = result.thread.turns[0]?.items[2];
+    expect(customToolItem?.type).toBe("dynamicToolCall");
+    expect(
+      customToolItem && customToolItem.type === "dynamicToolCall"
+        ? customToolItem.tool
+        : null,
+    ).toBe("apply_patch");
+
+    const customToolOutputItem = result.thread.turns[0]?.items[3];
+    expect(customToolOutputItem?.type).toBe("dynamicToolCall");
+    expect(
+      customToolOutputItem && customToolOutputItem.type === "dynamicToolCall"
+        ? customToolOutputItem.contentItems?.[0]?.type
+        : null,
+    ).toBe("inputText");
+
+    const functionCallItem = result.thread.turns[0]?.items[4];
+    expect(functionCallItem?.type).toBe("dynamicToolCall");
+    expect(
+      functionCallItem && functionCallItem.type === "dynamicToolCall"
+        ? functionCallItem.tool
+        : null,
+    ).toBe("exec_command");
+
+    const functionCallOutputItem = result.thread.turns[0]?.items[5];
+    expect(functionCallOutputItem?.type).toBe("dynamicToolCall");
+    expect(
+      functionCallOutputItem && functionCallOutputItem.type === "dynamicToolCall"
+        ? functionCallOutputItem.contentItems?.[0]?.type
+        : null,
+    ).toBe("inputText");
   });
 });

@@ -10,7 +10,25 @@ if (stored === "dark" || (!stored && prefersDark)) {
   document.documentElement.classList.add("dark");
 }
 
-registerSW({ immediate: true });
+const isLocalHost =
+  window.location.hostname === "localhost" ||
+  window.location.hostname === "127.0.0.1" ||
+  window.location.hostname === "::1";
+
+if (import.meta.env.DEV || isLocalHost) {
+  void navigator.serviceWorker
+    .getRegistrations()
+    .then((registrations) =>
+      Promise.allSettled(
+        registrations.map((registration) => registration.unregister()),
+      ),
+    )
+    .catch((error) => {
+      console.error("Failed to unregister service workers", error);
+    });
+} else {
+  registerSW({ immediate: true });
+}
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
