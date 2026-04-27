@@ -1608,9 +1608,22 @@ export function App(): React.JSX.Element {
 
     return allGroups;
   }, [agentDescriptors, projectColors, sidebarOrder, threads]);
+  const activeLiveState = useMemo(
+    () => (liveState?.threadId === selectedThreadId ? liveState : null),
+    [liveState, selectedThreadId],
+  );
+  const activeReadThreadState = useMemo(
+    () =>
+      readThreadState?.thread.id === selectedThreadId ? readThreadState : null,
+    [readThreadState, selectedThreadId],
+  );
+  const activeOwnerClientId = activeLiveState?.ownerClientId ?? null;
   const conversationState = useMemo(
-    () => liveState?.conversationState ?? readThreadState?.thread ?? null,
-    [liveState?.conversationState, readThreadState?.thread],
+    () =>
+      activeLiveState?.conversationState ??
+      activeReadThreadState?.thread ??
+      null,
+    [activeLiveState?.conversationState, activeReadThreadState?.thread],
   );
   const requestSourceState = conversationState;
 
@@ -1727,7 +1740,7 @@ export function App(): React.JSX.Element {
     !selectedThreadId ||
     (hasResolvedSelectedThreadProvider &&
       (resolvedSelectedThreadProvider !== "codex" ||
-        Boolean(liveState?.ownerClientId)));
+        Boolean(activeOwnerClientId)));
   const canListModels = canUseFeature(activeAgentDescriptor, "listModels");
   const canListCollaborationModes = canUseFeature(
     activeAgentDescriptor,
@@ -3446,8 +3459,8 @@ export function App(): React.JSX.Element {
           provider: threadAgentId,
           threadId,
           text: draft,
-          ...(liveState?.ownerClientId
-            ? { ownerClientId: liveState.ownerClientId }
+          ...(activeOwnerClientId
+            ? { ownerClientId: activeOwnerClientId }
             : {}),
           ...(effectiveModelId ? { model: effectiveModelId } : {}),
           ...(selectedReasoningEffort
@@ -3482,10 +3495,10 @@ export function App(): React.JSX.Element {
     },
     [
       activeThreadAgentId,
+      activeOwnerClientId,
       canSendMessageForActiveAgent,
       conversationState,
       hasResolvedSelectedThreadProvider,
-      liveState?.ownerClientId,
       models,
       modes,
       refreshAll,
@@ -3544,8 +3557,8 @@ export function App(): React.JSX.Element {
         await setCollaborationMode({
           provider: activeThreadAgentId,
           threadId: selectedThreadId,
-          ...(liveState?.ownerClientId
-            ? { ownerClientId: liveState.ownerClientId }
+          ...(activeOwnerClientId
+            ? { ownerClientId: activeOwnerClientId }
             : {}),
           collaborationMode: {
             mode: mode.mode,
@@ -3569,10 +3582,10 @@ export function App(): React.JSX.Element {
     },
     [
       activeThreadAgentId,
+      activeOwnerClientId,
       conversationState,
       hasResolvedSelectedThreadProvider,
       isModeSyncing,
-      liveState?.ownerClientId,
       loadSelectedThread,
       models,
       modes,
@@ -3599,8 +3612,8 @@ export function App(): React.JSX.Element {
         provider: activeThreadAgentId,
         threadId: selectedThreadId,
         requestId: activeRequest.id,
-        ...(liveState?.ownerClientId
-          ? { ownerClientId: liveState.ownerClientId }
+        ...(activeOwnerClientId
+          ? { ownerClientId: activeOwnerClientId }
           : {}),
         response: { answers },
       });
@@ -3613,9 +3626,9 @@ export function App(): React.JSX.Element {
   }, [
     activeRequest,
     activeThreadAgentId,
+    activeOwnerClientId,
     answerDraft,
     hasResolvedSelectedThreadProvider,
-    liveState?.ownerClientId,
     refreshAll,
     selectedThreadId,
   ]);
@@ -3633,8 +3646,8 @@ export function App(): React.JSX.Element {
         provider: activeThreadAgentId,
         threadId: selectedThreadId,
         requestId: activeRequest.id,
-        ...(liveState?.ownerClientId
-          ? { ownerClientId: liveState.ownerClientId }
+        ...(activeOwnerClientId
+          ? { ownerClientId: activeOwnerClientId }
           : {}),
         response: { answers: {} },
       });
@@ -3647,8 +3660,8 @@ export function App(): React.JSX.Element {
   }, [
     activeRequest,
     activeThreadAgentId,
+    activeOwnerClientId,
     hasResolvedSelectedThreadProvider,
-    liveState?.ownerClientId,
     refreshAll,
     selectedThreadId,
   ]);
@@ -3668,8 +3681,8 @@ export function App(): React.JSX.Element {
           provider: activeThreadAgentId,
           threadId: selectedThreadId,
           requestId: activeApprovalRequest.id,
-          ...(liveState?.ownerClientId
-            ? { ownerClientId: liveState.ownerClientId }
+          ...(activeOwnerClientId
+            ? { ownerClientId: activeOwnerClientId }
             : {}),
           response: buildApprovalResponse(activeApprovalRequest, action),
         });
@@ -3683,8 +3696,8 @@ export function App(): React.JSX.Element {
     [
       activeApprovalRequest,
       activeThreadAgentId,
+      activeOwnerClientId,
       hasResolvedSelectedThreadProvider,
-      liveState?.ownerClientId,
       refreshAll,
       selectedThreadId,
     ],
@@ -3702,8 +3715,8 @@ export function App(): React.JSX.Element {
       await interruptThread({
         provider: activeThreadAgentId,
         threadId: selectedThreadId,
-        ...(liveState?.ownerClientId
-          ? { ownerClientId: liveState.ownerClientId }
+        ...(activeOwnerClientId
+          ? { ownerClientId: activeOwnerClientId }
           : {}),
       });
       await refreshAll();
@@ -3714,9 +3727,9 @@ export function App(): React.JSX.Element {
     }
   }, [
     activeThreadAgentId,
+    activeOwnerClientId,
     canInterruptForActiveAgent,
     hasResolvedSelectedThreadProvider,
-    liveState?.ownerClientId,
     refreshAll,
     selectedThreadId,
   ]);
