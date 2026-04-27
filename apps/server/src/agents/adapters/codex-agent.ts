@@ -541,33 +541,36 @@ export class CodexAgentAdapter implements AgentAdapter {
       result = await readThreadWithOption(input.includeTurns);
     } catch (error) {
       const typedError = error instanceof Error ? error : null;
-      const shouldTryResume =
-        isThreadNotLoadedAppServerRpcError(typedError) ||
-        (input.includeTurns &&
-          (isThreadNotMaterializedIncludeTurnsAppServerRpcError(typedError) ||
-            isThreadNoRolloutIncludeTurnsAppServerRpcError(typedError)));
-      if (!shouldTryResume) {
-        throw error;
-      }
-
-      try {
-        await this.resumeThread(input.threadId);
-        result = await readThreadWithOption(input.includeTurns);
-      } catch (resumeRetryError) {
-        const typedResumeRetryError =
-          resumeRetryError instanceof Error ? resumeRetryError : null;
-        const shouldRetryWithoutTurns =
-          input.includeTurns &&
-          (isThreadNotMaterializedIncludeTurnsAppServerRpcError(
-            typedResumeRetryError,
-          ) ||
-            isThreadNoRolloutIncludeTurnsAppServerRpcError(
-              typedResumeRetryError,
-            ));
-        if (!shouldRetryWithoutTurns) {
-          throw resumeRetryError;
-        }
+      const shouldRetryWithoutTurns =
+        input.includeTurns &&
+        isEphemeralThreadIncludeTurnsAppServerRpcError(typedError);
+      if (shouldRetryWithoutTurns) {
         result = await readThreadWithOption(false);
+      } else {
+        const shouldTryResume =
+          isThreadNotLoadedAppServerRpcError(typedError) ||
+          (input.includeTurns &&
+            (isThreadNotMaterializedIncludeTurnsAppServerRpcError(typedError) ||
+              isThreadNoRolloutIncludeTurnsAppServerRpcError(typedError)));
+        if (!shouldTryResume) {
+          throw error;
+        }
+
+        try {
+          await this.resumeThread(input.threadId);
+          result = await readThreadWithOption(input.includeTurns);
+        } catch (resumeRetryError) {
+          const resumeRetryErrorMessage = toErrorMessage(resumeRetryError);
+          const shouldRetryWithoutTurns =
+            input.includeTurns &&
+            isIncludeTurnsUnsupportedAppServerRpcErrorMessage(
+              resumeRetryErrorMessage,
+            );
+          if (!shouldRetryWithoutTurns) {
+            throw resumeRetryError;
+          }
+          result = await readThreadWithOption(false);
+        }
       }
     }
     const parsedThread = this.applyPendingCollaborationMode(
@@ -2701,6 +2704,45 @@ export function isThreadNotLoadedAppServerRpcError(
   }
   const normalized = error.message.trim().toLowerCase();
   return normalized.includes("thread not loaded");
+}
+
+export function isThreadIncludeTurnsUnsupportedAppServerRpcError(
+  error: Error | null,
+): boolean {
+  return (
+    isEphemeralThreadIncludeTurnsAppServerRpcError(error) ||
+    isThreadNotMaterializedIncludeTurnsAppServerRpcError(error) ||
+    isThreadNoRolloutIncludeTurnsAppServerRpcError(error)
+  );
+}
+
+function isIncludeTurnsUnsupportedAppServerRpcErrorMessage(
+  message: string,
+): boolean {
+  const normalized = message.trim().toLowerCase();
+  return (
+    normalized.includes("app-server error -32600") &&
+    normalized.includes("includeturns") &&
+    (normalized.includes("ephemeral threads") ||
+      normalized.includes("not materialized yet") ||
+      normalized.includes("no rollout found for thread id"))
+  );
+}
+
+export function isEphemeralThreadIncludeTurnsAppServerRpcError(
+  error: Error | null,
+): boolean {
+  if (!isInvalidRequestAppServerRpcError(error)) {
+    return false;
+  }
+  if (!error) {
+    return false;
+  }
+  const normalized = error.message.trim().toLowerCase();
+  return (
+    normalized.includes("ephemeral threads") &&
+    normalized.includes("includeturns")
+  );
 }
 
 export function isThreadNoRolloutIncludeTurnsAppServerRpcError(

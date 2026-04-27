@@ -13,10 +13,11 @@ import {
   type TurnStartParams,
   type UserInputRequestId,
 } from "@farfield/protocol";
-import type {
-  AppServerNotificationListener,
-  AppServerRequestListener,
-  SendRequestOptions,
+import {
+  AppServerRpcError,
+  type AppServerNotificationListener,
+  type AppServerRequestListener,
+  type SendRequestOptions,
 } from "@farfield/api";
 
 const frameListeners: Array<(frame: IpcFrame) => void> = [];
@@ -36,9 +37,11 @@ const ipcRequestCalls: Array<{
   options: SendRequestOptions;
 }> = [];
 const readThreadCalls: string[] = [];
+const readThreadIncludeTurnsCalls: boolean[] = [];
 
 let readThreadResponse: AppServerReadThreadResponse;
 let listThreadsResponse: AppServerListThreadsResponse;
+let readThreadError: Error | null = null;
 
 vi.mock("@farfield/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@farfield/api")>();
@@ -88,9 +91,15 @@ vi.mock("@farfield/api", async (importOriginal) => {
 
     public async readThread(
       threadId: string,
-      _includeTurns = true,
+      includeTurns = true,
     ): Promise<AppServerReadThreadResponse> {
       readThreadCalls.push(threadId);
+      readThreadIncludeTurnsCalls.push(includeTurns);
+      if (readThreadError) {
+        const error = readThreadError;
+        readThreadError = null;
+        throw error;
+      }
       return readThreadResponse;
     }
 
@@ -377,6 +386,8 @@ describe("CodexAgentAdapter app-server pending requests", () => {
     startTurnCalls.splice(0, startTurnCalls.length);
     ipcRequestCalls.splice(0, ipcRequestCalls.length);
     readThreadCalls.splice(0, readThreadCalls.length);
+    readThreadIncludeTurnsCalls.splice(0, readThreadIncludeTurnsCalls.length);
+    readThreadError = null;
 
     listThreadsResponse = {
       data: [],
@@ -540,6 +551,26 @@ describe("CodexAgentAdapter app-server pending requests", () => {
     expect(result.thread.turns.map((turn) => turn.id)).toEqual([
       "019dcd42-5591-7100-bfe7-3d14f7d22182",
     ]);
+  });
+
+  it("retries ephemeral thread reads without turns", async () => {
+    const threadId = "thread-ephemeral-read";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+    readThreadError = new AppServerRpcError(
+      -32600,
+      "ephemeral threads do not support includeTurns",
+    );
+
+    const result = await adapter.readThread({
+      threadId,
+      includeTurns: true,
+    });
+
+    expect(result.thread.id).toBe(threadId);
+    expect(readThreadIncludeTurnsCalls).toEqual([true, false]);
   });
 
   it("routes owned collaboration mode changes through the desktop follower client", async () => {

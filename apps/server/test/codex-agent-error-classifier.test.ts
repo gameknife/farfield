@@ -3,6 +3,7 @@ import { AppServerRpcError, DesktopIpcError } from "@farfield/api";
 import {
   isInvalidRequestAppServerRpcError,
   isIpcNoClientFoundError,
+  isEphemeralThreadIncludeTurnsAppServerRpcError,
   isThreadNotLoadedAppServerRpcError,
   isThreadNoRolloutIncludeTurnsAppServerRpcError,
   isThreadNotMaterializedIncludeTurnsAppServerRpcError,
@@ -110,6 +111,35 @@ describe("isThreadNoRolloutIncludeTurnsAppServerRpcError", () => {
     expect(
       isThreadNoRolloutIncludeTurnsAppServerRpcError(
         new Error("no rollout found for thread id abc"),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("isEphemeralThreadIncludeTurnsAppServerRpcError", () => {
+  it("returns true for ephemeral includeTurns errors", () => {
+    expect(
+      isEphemeralThreadIncludeTurnsAppServerRpcError(
+        new AppServerRpcError(
+          -32600,
+          "ephemeral threads do not support includeTurns",
+        ),
+      ),
+    ).toBe(true);
+  });
+
+  it("returns false for other invalid-request errors", () => {
+    expect(
+      isEphemeralThreadIncludeTurnsAppServerRpcError(
+        new AppServerRpcError(-32600, "thread not found"),
+      ),
+    ).toBe(false);
+    expect(
+      isEphemeralThreadIncludeTurnsAppServerRpcError(
+        new AppServerRpcError(
+          -32603,
+          "ephemeral threads do not support includeTurns",
+        ),
       ),
     ).toBe(false);
   });
