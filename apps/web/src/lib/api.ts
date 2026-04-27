@@ -91,7 +91,52 @@ const HealthResponseSchema = z
                 maxMs: z.number().nonnegative(),
               })
               .strict(),
+            realtimeCoreSidebarList: z
+              .object({
+                count: z.number().int().nonnegative(),
+                slowCount: z.number().int().nonnegative(),
+                lastMs: z.number().nonnegative(),
+                avgMs: z.number().nonnegative(),
+                maxMs: z.number().nonnegative(),
+              })
+              .strict(),
+            realtimeCoreRateLimits: z
+              .object({
+                count: z.number().int().nonnegative(),
+                slowCount: z.number().int().nonnegative(),
+                lastMs: z.number().nonnegative(),
+                avgMs: z.number().nonnegative(),
+                maxMs: z.number().nonnegative(),
+              })
+              .strict(),
+            realtimeCoreAgentsBuild: z
+              .object({
+                count: z.number().int().nonnegative(),
+                slowCount: z.number().int().nonnegative(),
+                lastMs: z.number().nonnegative(),
+                avgMs: z.number().nonnegative(),
+                maxMs: z.number().nonnegative(),
+              })
+              .strict(),
             realtimeThreadBuild: z
+              .object({
+                count: z.number().int().nonnegative(),
+                slowCount: z.number().int().nonnegative(),
+                lastMs: z.number().nonnegative(),
+                avgMs: z.number().nonnegative(),
+                maxMs: z.number().nonnegative(),
+              })
+              .strict(),
+            codexThreadList: z
+              .object({
+                count: z.number().int().nonnegative(),
+                slowCount: z.number().int().nonnegative(),
+                lastMs: z.number().nonnegative(),
+                avgMs: z.number().nonnegative(),
+                maxMs: z.number().nonnegative(),
+              })
+              .strict(),
+            codexThreadRead: z
               .object({
                 count: z.number().int().nonnegative(),
                 slowCount: z.number().int().nonnegative(),

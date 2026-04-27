@@ -1,6 +1,11 @@
 const SERVER_TIMING_METRIC_IDS = [
   "realtimeCoreBuild",
+  "realtimeCoreSidebarList",
+  "realtimeCoreRateLimits",
+  "realtimeCoreAgentsBuild",
   "realtimeThreadBuild",
+  "codexThreadList",
+  "codexThreadRead",
   "codexThreadRefresh",
   "codexLiveStateRead",
 ] as const;
@@ -30,7 +35,12 @@ interface MutableServerTimingMetric {
 
 const DEFAULT_SLOW_THRESHOLD_MS: Record<ServerTimingMetricId, number> = {
   realtimeCoreBuild: 250,
+  realtimeCoreSidebarList: 250,
+  realtimeCoreRateLimits: 250,
+  realtimeCoreAgentsBuild: 150,
   realtimeThreadBuild: 150,
+  codexThreadList: 250,
+  codexThreadRead: 250,
   codexThreadRefresh: 500,
   codexLiveStateRead: 80,
 };
@@ -54,7 +64,42 @@ function createEmptySnapshot(): ServerTimingSnapshot {
       avgMs: 0,
       maxMs: 0,
     },
+    realtimeCoreSidebarList: {
+      count: 0,
+      slowCount: 0,
+      lastMs: 0,
+      avgMs: 0,
+      maxMs: 0,
+    },
+    realtimeCoreRateLimits: {
+      count: 0,
+      slowCount: 0,
+      lastMs: 0,
+      avgMs: 0,
+      maxMs: 0,
+    },
+    realtimeCoreAgentsBuild: {
+      count: 0,
+      slowCount: 0,
+      lastMs: 0,
+      avgMs: 0,
+      maxMs: 0,
+    },
     realtimeThreadBuild: {
+      count: 0,
+      slowCount: 0,
+      lastMs: 0,
+      avgMs: 0,
+      maxMs: 0,
+    },
+    codexThreadList: {
+      count: 0,
+      slowCount: 0,
+      lastMs: 0,
+      avgMs: 0,
+      maxMs: 0,
+    },
+    codexThreadRead: {
       count: 0,
       slowCount: 0,
       lastMs: 0,
@@ -82,7 +127,12 @@ export class ServerTimingTracker {
   private readonly metrics: Record<ServerTimingMetricId, MutableServerTimingMetric> =
     {
       realtimeCoreBuild: createMutableMetric(),
+      realtimeCoreSidebarList: createMutableMetric(),
+      realtimeCoreRateLimits: createMutableMetric(),
+      realtimeCoreAgentsBuild: createMutableMetric(),
       realtimeThreadBuild: createMutableMetric(),
+      codexThreadList: createMutableMetric(),
+      codexThreadRead: createMutableMetric(),
       codexThreadRefresh: createMutableMetric(),
       codexLiveStateRead: createMutableMetric(),
     };

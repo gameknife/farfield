@@ -1355,6 +1355,10 @@ export function App(): React.JSX.Element {
   const [selectedModelId, setSelectedModelId] = useState("");
   const [selectedReasoningEffort, setSelectedReasoningEffort] = useState("");
   const [isBusy, setIsBusy] = useState(false);
+  const [isCoreLoading, setIsCoreLoading] = useState(initialSnapshot === null);
+  const [isSelectedThreadLoading, setIsSelectedThreadLoading] = useState(
+    initialSnapshot === null && initialUiState.threadId !== null,
+  );
   const [traceStatus, setTraceStatus] = useState<TraceStatus | null>(null);
   const [traceLabel, setTraceLabel] = useState("capture");
   const [traceNote, setTraceNote] = useState("");
@@ -1429,6 +1433,7 @@ export function App(): React.JSX.Element {
   const threadProviderByIdRef = useRef<Map<string, AgentId>>(new Map());
   const optimisticSelectedThreadIdsRef = useRef<Set<string>>(new Set());
   const loadCoreDataRef = useRef<(() => Promise<void>) | null>(null);
+  const selectedThreadLoadRequestIdRef = useRef(0);
   const loadSelectedThreadRef = useRef<
     (
       threadId: string,
@@ -2045,6 +2050,8 @@ export function App(): React.JSX.Element {
     : !openCodeConnected;
   /* Data loading */
   const loadCoreData = useCallback(async () => {
+    setIsCoreLoading(true);
+    try {
     const shouldLoadDebugData = activeTabRef.current === "debug";
     const now = Date.now();
     const cachedAgents = agentCacheRef.current;
@@ -2199,21 +2206,7 @@ export function App(): React.JSX.Element {
     );
 
     if (nh) {
-      setHealth((prev) => {
-        if (
-          prev &&
-          prev.state.appReady === nh.state.appReady &&
-          prev.state.ipcConnected === nh.state.ipcConnected &&
-          prev.state.ipcInitialized === nh.state.ipcInitialized &&
-          prev.state.gitCommit === nh.state.gitCommit &&
-          prev.state.lastError === nh.state.lastError &&
-          prev.state.historyCount === nh.state.historyCount &&
-          prev.state.threadOwnerCount === nh.state.threadOwnerCount
-        ) {
-          return prev;
-        }
-        return nh;
-      });
+      setHealth(nh);
     }
     if (
       hasCachedCatalog &&
@@ -2394,6 +2387,9 @@ export function App(): React.JSX.Element {
         return nonPlanDefault?.mode ?? nextModesData[0]?.mode ?? "";
       });
     });
+    } finally {
+      setIsCoreLoading(false);
+    }
   }, [agentDescriptors, selectedAgentId]);
 
   const loadSelectedThread = useCallback(
@@ -2403,6 +2399,13 @@ export function App(): React.JSX.Element {
     ) => {
       const includeTurns = options?.includeTurns ?? true;
       const includeStreamEvents = options?.includeStreamEvents ?? includeTurns;
+      const shouldTrackSelectedLoad = selectedThreadIdRef.current === threadId;
+      const selectedLoadRequestId = selectedThreadLoadRequestIdRef.current + 1;
+      if (shouldTrackSelectedLoad) {
+        selectedThreadLoadRequestIdRef.current = selectedLoadRequestId;
+        setIsSelectedThreadLoading(true);
+      }
+      try {
       const cachedThreadState =
         threadViewStateCacheRef.current.get(threadId) ?? null;
       const candidateProviders = collectThreadProviderCandidates({
@@ -2619,6 +2622,14 @@ export function App(): React.JSX.Element {
           isTransientThreadRegistrationError(current, threadId) ? "" : current,
         );
       });
+      } finally {
+        if (
+          shouldTrackSelectedLoad &&
+          selectedThreadLoadRequestIdRef.current === selectedLoadRequestId
+        ) {
+          setIsSelectedThreadLoading(false);
+        }
+      }
     },
     [
       agentsById,
@@ -2956,18 +2967,17 @@ export function App(): React.JSX.Element {
       try {
         setError("");
         const loadCore = loadCoreDataRef.current;
-        if (loadCore) {
-          await loadCore();
-        }
-        if (selectedThreadIdRef.current) {
-          const loadThread = loadSelectedThreadRef.current;
-          if (loadThread) {
-            await loadThread(selectedThreadIdRef.current, {
-              includeTurns: true,
-              includeStreamEvents: true,
-            });
-          }
-        }
+        const loadThread = loadSelectedThreadRef.current;
+        const selectedThreadId = selectedThreadIdRef.current;
+        const corePromise = loadCore ? loadCore() : Promise.resolve();
+        const threadPromise =
+          selectedThreadId && loadThread
+            ? loadThread(selectedThreadId, {
+                includeTurns: true,
+                includeStreamEvents: true,
+              })
+            : Promise.resolve();
+        await Promise.all([corePromise, threadPromise]);
       } catch (error) {
         setError(toErrorMessage(error));
       }
@@ -3993,8 +4003,9 @@ export function App(): React.JSX.Element {
         <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden py-2 pl-2 pr-0">
           {threads.length === 0 && (
             <div className="px-4 py-6 text-xs text-muted-foreground text-center space-y-3">
-              <div>No threads</div>
-              {availableAgentIds.length > 0 &&
+              <div>{isCoreLoading ? "Loading threads..." : "No threads"}</div>
+              {!isCoreLoading &&
+                availableAgentIds.length > 0 &&
                 (availableAgentIds.length === 1 ? (
                   <Button
                     type="button"
@@ -4444,9 +4455,39 @@ export function App(): React.JSX.Element {
                     )}
                   </div>
                   <div>
+                    Sidebar list:{" "}
+                    {formatTimingSummary(
+                      health?.state.timings?.realtimeCoreSidebarList,
+                    )}
+                  </div>
+                  <div>
+                    Rate limits:{" "}
+                    {formatTimingSummary(
+                      health?.state.timings?.realtimeCoreRateLimits,
+                    )}
+                  </div>
+                  <div>
+                    Agents:{" "}
+                    {formatTimingSummary(
+                      health?.state.timings?.realtimeCoreAgentsBuild,
+                    )}
+                  </div>
+                  <div>
                     Thread build:{" "}
                     {formatTimingSummary(
                       health?.state.timings?.realtimeThreadBuild,
+                    )}
+                  </div>
+                  <div>
+                    Codex list:{" "}
+                    {formatTimingSummary(
+                      health?.state.timings?.codexThreadList,
+                    )}
+                  </div>
+                  <div>
+                    Codex read:{" "}
+                    {formatTimingSummary(
+                      health?.state.timings?.codexThreadRead,
                     )}
                   </div>
                   <div>
@@ -4858,6 +4899,9 @@ export function App(): React.JSX.Element {
                 {/* Conversation */}
                 <ChatTimeline
                   selectedThreadId={selectedThreadId}
+                  isLoading={
+                    isSelectedThreadLoading && conversationState === null
+                  }
                   turnsLength={turns.length}
                   hasAnyAgent={availableAgentIds.length > 0}
                   hasHiddenChatItems={hasHiddenChatItems}

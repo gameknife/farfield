@@ -120,7 +120,14 @@ export interface CodexAgentOptions {
   reconnectDelayMs: number;
   onRuntimeStateChange?: () => void;
   onThreadStateChange?: (threadId: string) => void;
-  onTiming?: (metricId: "codexThreadRefresh" | "codexLiveStateRead", durationMs: number) => void;
+  onTiming?: (
+    metricId:
+      | "codexThreadList"
+      | "codexThreadRead"
+      | "codexThreadRefresh"
+      | "codexLiveStateRead",
+    durationMs: number,
+  ) => void;
 }
 
 const ANSI_ESCAPE_REGEX = /\u001B\[[0-?]*[ -/]*[@-~]/g;
@@ -146,7 +153,14 @@ export class CodexAgentAdapter implements AgentAdapter {
   private readonly onRuntimeStateChange: (() => void) | null;
   private readonly onThreadStateChange: ((threadId: string) => void) | null;
   private readonly onTiming:
-    | ((metricId: "codexThreadRefresh" | "codexLiveStateRead", durationMs: number) => void)
+    | ((
+        metricId:
+          | "codexThreadList"
+          | "codexThreadRead"
+          | "codexThreadRefresh"
+          | "codexLiveStateRead",
+        durationMs: number,
+      ) => void)
     | null;
   private readonly reconnectDelayMs: number;
 
@@ -410,6 +424,7 @@ export class CodexAgentAdapter implements AgentAdapter {
   ): Promise<AgentListThreadsResult> {
     this.ensureCodexAvailable();
 
+    const startedAt = performance.now();
     const result = await this.runAppServerCall(() =>
       input.all
         ? this.appClient.listThreadsAll(
@@ -479,14 +494,16 @@ export class CodexAgentAdapter implements AgentAdapter {
       };
     });
 
-    return {
+    const response = {
       data,
       nextCursor: result.nextCursor ?? null,
-      ...(typeof result.pages === "number" ? { pages: result.pages } : {}),
-      ...(typeof result.truncated === "boolean"
-        ? { truncated: result.truncated }
-        : {}),
+      ...(result.pages === undefined ? {} : { pages: result.pages }),
+      ...(result.truncated === undefined
+        ? {}
+        : { truncated: result.truncated }),
     };
+    this.onTiming?.("codexThreadList", performance.now() - startedAt);
+    return response;
   }
 
   public async createThread(
@@ -530,6 +547,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     input: AgentReadThreadInput,
   ): Promise<AgentReadThreadResult> {
     this.ensureCodexAvailable();
+    const startedAt = performance.now();
     const readThreadWithOption = async (includeTurns: boolean) => {
       return this.runAppServerCall(() =>
         this.appClient.readThread(input.threadId, includeTurns),
@@ -601,9 +619,11 @@ export class CodexAgentAdapter implements AgentAdapter {
       returnedThread =
         this.readCanonicalThreadState(input.threadId) ?? parsedThread;
     }
-    return {
+    const response = {
       thread: returnedThread,
     };
+    this.onTiming?.("codexThreadRead", performance.now() - startedAt);
+    return response;
   }
 
   public async sendMessage(input: AgentSendMessageInput): Promise<void> {

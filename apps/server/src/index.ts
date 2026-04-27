@@ -54,7 +54,11 @@ import {
   mapThread,
 } from "./unified/adapter.js";
 import { RealtimeCoordinator } from "./realtime/coordinator.js";
-import { ServerTimingTracker, type ServerTimingSnapshot } from "./perf-metrics.js";
+import {
+  ServerTimingTracker,
+  type ServerTimingMetricId,
+  type ServerTimingSnapshot,
+} from "./perf-metrics.js";
 
 const HOST = process.env["HOST"] ?? "127.0.0.1";
 const PORT = Number(process.env["PORT"] ?? 4311);
@@ -62,6 +66,8 @@ const HISTORY_LIMIT = 2_000;
 const USER_AGENT = "farfield/0.2.2";
 const IPC_RECONNECT_DELAY_MS = 1_000;
 const SIDEBAR_PREVIEW_MAX_CHARS = 180;
+const SIDEBAR_CORE_CACHE_TTL_MS = 1_000;
+const RATE_LIMITS_CACHE_TTL_MS = 5_000;
 const CORE_RELEVANT_CODEX_NOTIFICATION_METHODS = new Set<
   AppServerServerNotificationMethod
 >([
@@ -77,6 +83,18 @@ const CORE_RELEVANT_CODEX_NOTIFICATION_METHODS = new Set<
 
 const TRACE_DIR = path.resolve(process.cwd(), "traces");
 const DEFAULT_WORKSPACE = path.resolve(process.cwd());
+
+async function timeServerOperation<T>(
+  metricId: ServerTimingMetricId,
+  task: () => Promise<T>,
+): Promise<T> {
+  const startedAt = performance.now();
+  try {
+    return await task();
+  } finally {
+    timingTracker.record(metricId, performance.now() - startedAt);
+  }
+}
 
 const IpcParamsConversationIdSchema = z
   .object({
@@ -531,6 +549,30 @@ interface UnifiedSidebarResponse {
   errors: Record<UnifiedProviderId, ProviderErrorPayload | null>;
 }
 
+interface UnifiedThreadListInput {
+  limit: number;
+  archived: boolean;
+  all: boolean;
+  maxPages: number;
+  cursor: string | null;
+}
+
+interface SidebarCacheEntry {
+  expiresAtMs: number;
+  value: UnifiedSidebarResponse;
+}
+
+interface RateLimitsCacheEntry {
+  expiresAtMs: number;
+  value: AppServerGetAccountRateLimitsResponse;
+}
+
+const sidebarCacheByKey = new Map<string, SidebarCacheEntry>();
+const sidebarInFlightByKey = new Map<string, Promise<UnifiedSidebarResponse>>();
+let rateLimitsCacheEntry: RateLimitsCacheEntry | null = null;
+let rateLimitsInFlight: Promise<AppServerGetAccountRateLimitsResponse> | null =
+  null;
+
 function isFeatureAvailable(feature: UnifiedFeatureAvailability): boolean {
   return feature.status === "available";
 }
@@ -560,13 +602,7 @@ function buildAgentCapabilities(
 }
 
 async function listUnifiedThreads(
-  input: {
-    limit: number;
-    archived: boolean;
-    all: boolean;
-    maxPages: number;
-    cursor: string | null;
-  },
+  input: UnifiedThreadListInput,
 ): Promise<UnifiedListThreadsResponse> {
   const data: UnifiedThreadSummary[] = [];
   const cursors: Record<UnifiedProviderId, string | null> = {
@@ -633,13 +669,7 @@ async function listUnifiedThreads(
 }
 
 async function listUnifiedSidebarThreads(
-  input: {
-    limit: number;
-    archived: boolean;
-    all: boolean;
-    maxPages: number;
-    cursor: string | null;
-  },
+  input: UnifiedThreadListInput,
 ): Promise<UnifiedSidebarResponse> {
   const result = await listUnifiedThreads(input);
   return {
@@ -651,18 +681,60 @@ async function listUnifiedSidebarThreads(
   };
 }
 
+function buildSidebarCacheKey(input: UnifiedThreadListInput): string {
+  return [
+    String(input.limit),
+    input.archived ? "archived" : "active",
+    input.all ? "all" : "recent",
+    String(input.maxPages),
+    input.cursor ?? "",
+  ].join(":");
+}
+
+async function listUnifiedSidebarThreadsShared(
+  input: UnifiedThreadListInput,
+): Promise<UnifiedSidebarResponse> {
+  const key = buildSidebarCacheKey(input);
+  const nowMs = Date.now();
+  const cached = sidebarCacheByKey.get(key);
+  if (cached && cached.expiresAtMs > nowMs) {
+    return cached.value;
+  }
+
+  const inFlight = sidebarInFlightByKey.get(key);
+  if (inFlight) {
+    return inFlight;
+  }
+
+  const promise = listUnifiedSidebarThreads(input)
+    .then((value) => {
+      sidebarCacheByKey.set(key, {
+        expiresAtMs: Date.now() + SIDEBAR_CORE_CACHE_TTL_MS,
+        value,
+      });
+      return value;
+    })
+    .finally(() => {
+      sidebarInFlightByKey.delete(key);
+    });
+  sidebarInFlightByKey.set(key, promise);
+  return promise;
+}
+
 async function buildRealtimeCoreState() {
   const startedAt = performance.now();
   try {
     const [sidebar, rateLimits, features] = await Promise.all([
-      listUnifiedSidebarThreads({
-        limit: 80,
-        archived: false,
-        all: false,
-        maxPages: 1,
-        cursor: null,
-      }),
-      readRateLimitsSafe(),
+      timeServerOperation("realtimeCoreSidebarList", () =>
+        listUnifiedSidebarThreadsShared({
+          limit: 80,
+          archived: false,
+          all: false,
+          maxPages: 1,
+          cursor: null,
+        }),
+      ),
+      timeServerOperation("realtimeCoreRateLimits", () => readRateLimitsSafe()),
       Promise.resolve(
         buildUnifiedFeatureMatrix({
           codex: codexAdapter,
@@ -671,39 +743,43 @@ async function buildRealtimeCoreState() {
       ),
     ]);
 
-    const agents = await Promise.all(
-      listUnifiedProviders().map(async (provider) => {
-        const providerFeatures = features[provider];
-        const enabled = registry.getAdapter(provider)?.isEnabled() ?? false;
-        const connected = registry.getAdapter(provider)?.isConnected() ?? false;
-        const adapter = resolveUnifiedAdapter(provider);
-        let projectDirectories: string[] = [];
+    const agents = await timeServerOperation(
+      "realtimeCoreAgentsBuild",
+      async () =>
+        Promise.all(
+          listUnifiedProviders().map(async (provider) => {
+            const providerFeatures = features[provider];
+            const enabled = registry.getAdapter(provider)?.isEnabled() ?? false;
+            const connected = registry.getAdapter(provider)?.isConnected() ?? false;
+            const adapter = resolveUnifiedAdapter(provider);
+            let projectDirectories: string[] = [];
 
-        if (
-          adapter &&
-          isFeatureAvailable(providerFeatures.listProjectDirectories)
-        ) {
-          try {
-            const result = await adapter.execute({
-              kind: "listProjectDirectories",
-              provider,
-            });
-            projectDirectories = result.directories;
-          } catch {
-            projectDirectories = [];
-          }
-        }
+            if (
+              adapter &&
+              isFeatureAvailable(providerFeatures.listProjectDirectories)
+            ) {
+              try {
+                const result = await adapter.execute({
+                  kind: "listProjectDirectories",
+                  provider,
+                });
+                projectDirectories = result.directories;
+              } catch {
+                projectDirectories = [];
+              }
+            }
 
-        return {
-          id: provider,
-          label: provider === "codex" ? "Codex" : "OpenCode",
-          enabled,
-          connected,
-          features: providerFeatures,
-          capabilities: buildAgentCapabilities(providerFeatures),
-          projectDirectories,
-        };
-      }),
+            return {
+              id: provider,
+              label: provider === "codex" ? "Codex" : "OpenCode",
+              enabled,
+              connected,
+              features: providerFeatures,
+              capabilities: buildAgentCapabilities(providerFeatures),
+              projectDirectories,
+            };
+          }),
+        ),
     );
 
     const defaultAgentId = agents.find((agent) => agent.enabled)?.id ?? "codex";
@@ -914,15 +990,42 @@ async function buildRealtimeDebugState() {
 
 async function readRateLimitsSafe():
   Promise<AppServerGetAccountRateLimitsResponse | null> {
-  const adapter = registry.resolveFirstWithCapability("canReadRateLimits");
-  if (!adapter || !adapter.readRateLimits) {
-    return null;
-  }
   try {
-    return await adapter.readRateLimits();
+    return await readRateLimitsShared();
   } catch {
     return null;
   }
+}
+
+async function readRateLimitsShared():
+  Promise<AppServerGetAccountRateLimitsResponse> {
+  const nowMs = Date.now();
+  if (rateLimitsCacheEntry && rateLimitsCacheEntry.expiresAtMs > nowMs) {
+    return rateLimitsCacheEntry.value;
+  }
+
+  if (rateLimitsInFlight) {
+    return rateLimitsInFlight;
+  }
+
+  const adapter = registry.resolveFirstWithCapability("canReadRateLimits");
+  if (!adapter || !adapter.readRateLimits) {
+    throw new Error("No agent supports rate limit reading");
+  }
+
+  rateLimitsInFlight = adapter
+    .readRateLimits()
+    .then((value) => {
+      rateLimitsCacheEntry = {
+        expiresAtMs: Date.now() + RATE_LIMITS_CACHE_TTL_MS,
+        value,
+      };
+      return value;
+    })
+    .finally(() => {
+      rateLimitsInFlight = null;
+    });
+  return rateLimitsInFlight;
 }
 
 function classifyCodexFrameForRealtime(frame: IpcFrame): void {
@@ -1266,7 +1369,7 @@ const server = http.createServer(async (req, res) => {
       const all = parseBoolean(url.searchParams.get("all"), false);
       const maxPages = parseInteger(url.searchParams.get("maxPages"), 20);
       const cursor = url.searchParams.get("cursor") ?? null;
-      const result = await listUnifiedSidebarThreads({
+      const result = await listUnifiedSidebarThreadsShared({
         limit,
         archived,
         all,
@@ -1605,7 +1708,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       try {
-        const result = await adapter.readRateLimits();
+        const result = await readRateLimitsShared();
         jsonResponse(res, 200, { ok: true, ...result });
       } catch (error) {
         const message = toErrorMessage(error);

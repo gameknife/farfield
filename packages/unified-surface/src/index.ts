@@ -1381,7 +1381,12 @@ const UnifiedRealtimeTimingMetricSchema = z
 const UnifiedRealtimeServerTimingsSchema = z
   .object({
     realtimeCoreBuild: UnifiedRealtimeTimingMetricSchema,
+    realtimeCoreSidebarList: UnifiedRealtimeTimingMetricSchema,
+    realtimeCoreRateLimits: UnifiedRealtimeTimingMetricSchema,
+    realtimeCoreAgentsBuild: UnifiedRealtimeTimingMetricSchema,
     realtimeThreadBuild: UnifiedRealtimeTimingMetricSchema,
+    codexThreadList: UnifiedRealtimeTimingMetricSchema,
+    codexThreadRead: UnifiedRealtimeTimingMetricSchema,
     codexThreadRefresh: UnifiedRealtimeTimingMetricSchema,
     codexLiveStateRead: UnifiedRealtimeTimingMetricSchema,
   })

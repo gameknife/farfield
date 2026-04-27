@@ -17,6 +17,7 @@ export interface ChatTimelineEntry {
 
 interface ChatTimelineProps {
   selectedThreadId: string | null;
+  isLoading: boolean;
   turnsLength: number;
   hasAnyAgent: boolean;
   hasHiddenChatItems: boolean;
@@ -31,6 +32,7 @@ interface ChatTimelineProps {
 
 export const ChatTimeline = memo(function ChatTimeline({
   selectedThreadId,
+  isLoading,
   turnsLength,
   hasAnyAgent,
   hasHiddenChatItems,
@@ -65,7 +67,9 @@ export const ChatTimeline = memo(function ChatTimeline({
           >
             {turnsLength === 0 ? (
               <div className="text-center py-20 text-sm text-muted-foreground">
-                {selectedThreadId
+                {isLoading
+                  ? "Loading thread..."
+                  : selectedThreadId
                   ? "No messages yet"
                   : hasAnyAgent
                     ? "Start typing to create a new thread"
