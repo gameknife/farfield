@@ -11,6 +11,7 @@ import {
   type AppServerServerNotification,
   type AppServerServerRequest,
   JsonValueSchema,
+  LegacyReviewApprovalResponseSchema,
   ProtocolValidationError,
   CollaborationModeSchema,
   ContextCompactionItemSchema,
@@ -35,6 +36,7 @@ import {
   type ThreadConversationRequest,
   type ThreadConversationState,
   type ThreadStreamStateChangedBroadcast,
+  type UserInputResponsePayload,
   type UserInputRequestId,
 } from "@farfield/protocol";
 import { z } from "zod";
@@ -64,6 +66,16 @@ type TurnItem = z.infer<typeof TurnItemSchema>;
 type PendingAppServerRequestEntry = {
   request: ThreadConversationRequest;
   seenInAuthoritativeRead: boolean;
+};
+
+type PendingThreadRequestOwnerEntry = {
+  requestId: UserInputRequestId;
+  ownerClientId: string | null;
+};
+
+type ResolvedPendingThreadRequest = {
+  request: ThreadConversationRequest;
+  ownerClientId: string | null;
 };
 
 interface PendingThreadRefresh {
@@ -142,6 +154,10 @@ export class CodexAgentAdapter implements AgentAdapter {
   private readonly pendingAppServerRequestsByThreadId = new Map<
     string,
     PendingAppServerRequestEntry[]
+  >();
+  private readonly pendingThreadRequestOwnersByThreadId = new Map<
+    string,
+    PendingThreadRequestOwnerEntry[]
   >();
   private readonly streamEventsByThreadId = new Map<string, IpcFrame[]>();
   private readonly activeTurnIdByThreadId = new Map<string, string>();
@@ -773,82 +789,22 @@ export class CodexAgentAdapter implements AgentAdapter {
   ): Promise<{ ownerClientId: string; requestId: UserInputRequestId }> {
     this.ensureCodexAvailable();
     const parsedResponse = parseUserInputResponsePayload(input.response);
-    const ownerClientId = this.resolveVisibleOwnerClientId(
+    const resolvedRequest = this.resolvePendingThreadRequestForSubmission(
       input.threadId,
+      input.requestId,
       input.ownerClientId,
     );
-    const ownerClientIdForResult = ownerClientId ?? "app-server";
-    const request = this.findPendingRequest(input.threadId, input.requestId);
+    await this.submitResolvedPendingThreadRequest(
+      input.threadId,
+      input.requestId,
+      resolvedRequest,
+      parsedResponse,
+    );
 
-    switch (request?.method) {
-      case "item/commandExecution/requestApproval": {
-        const approvalResponse =
-          parseCommandExecutionRequestApprovalResponse(parsedResponse);
-        await this.ipcClient.sendRequestAndWait(
-          "thread-follower-command-approval-decision",
-          {
-            conversationId: input.threadId,
-            requestId: input.requestId,
-            decision: approvalResponse.decision,
-          },
-          {
-            ...(ownerClientId ? { targetClientId: ownerClientId } : {}),
-            version: 1,
-          },
-        );
-        break;
-      }
-
-      case "item/fileChange/requestApproval": {
-        const approvalResponse =
-          parseFileChangeRequestApprovalResponse(parsedResponse);
-        await this.ipcClient.sendRequestAndWait(
-          "thread-follower-file-approval-decision",
-          {
-            conversationId: input.threadId,
-            requestId: input.requestId,
-            decision: approvalResponse.decision,
-          },
-          {
-            ...(ownerClientId ? { targetClientId: ownerClientId } : {}),
-            version: 1,
-          },
-        );
-        break;
-      }
-
-      case "item/tool/requestUserInput": {
-        const userInputResponse =
-          parseToolRequestUserInputResponsePayload(parsedResponse);
-        if (!ownerClientId) {
-          await this.runAppServerCall(() =>
-            this.appClient.submitUserInput(input.requestId, userInputResponse),
-          );
-          break;
-        }
-
-        await this.ipcClient.sendRequestAndWait(
-          "thread-follower-submit-user-input",
-          {
-            conversationId: input.threadId,
-            requestId: input.requestId,
-            response: userInputResponse,
-          },
-          {
-            targetClientId: ownerClientId,
-            version: 1,
-          },
-        );
-        break;
-      }
-
-      default:
-        await this.runAppServerCall(() =>
-          this.appClient.submitUserInput(input.requestId, parsedResponse),
-        );
-        break;
-    }
+    const ownerClientIdForResult =
+      resolvedRequest.ownerClientId ?? "app-server";
     this.removePendingAppServerRequest(input.threadId, input.requestId);
+    this.removePendingThreadRequestOwner(input.threadId, input.requestId);
     this.notifyThreadStateChanged(input.threadId);
     this.scheduleThreadRefresh(
       input.threadId,
@@ -860,6 +816,178 @@ export class CodexAgentAdapter implements AgentAdapter {
       ownerClientId: ownerClientIdForResult,
       requestId: input.requestId,
     };
+  }
+
+  private resolvePendingThreadRequestForSubmission(
+    threadId: string,
+    requestId: UserInputRequestId,
+    ownerClientIdOverride?: string,
+  ): ResolvedPendingThreadRequest {
+    const request = this.findPendingRequest(threadId, requestId);
+    if (!request) {
+      throw new Error(
+        `Request ${String(requestId)} is not present in thread state for thread ${threadId}`,
+      );
+    }
+
+    const recordedOwner = this.findPendingThreadRequestOwner(
+      threadId,
+      requestId,
+    );
+    if (recordedOwner) {
+      return {
+        request,
+        ownerClientId: recordedOwner.ownerClientId,
+      };
+    }
+
+    const ownerClientId =
+      normalizeNonEmptyString(ownerClientIdOverride) ??
+      normalizeNonEmptyString(this.threadOwnerById.get(threadId));
+
+    return {
+      request,
+      ownerClientId,
+    };
+  }
+
+  private async submitResolvedPendingThreadRequest(
+    threadId: string,
+    requestId: UserInputRequestId,
+    resolvedRequest: ResolvedPendingThreadRequest,
+    parsedResponse: UserInputResponsePayload,
+  ): Promise<void> {
+    const ownerClientId = resolvedRequest.ownerClientId;
+    switch (resolvedRequest.request.method) {
+      case "item/commandExecution/requestApproval": {
+        await this.submitCommandApprovalResponse(
+          threadId,
+          requestId,
+          ownerClientId,
+          parsedResponse,
+        );
+        break;
+      }
+
+      case "item/fileChange/requestApproval": {
+        await this.submitFileApprovalResponse(
+          threadId,
+          requestId,
+          ownerClientId,
+          parsedResponse,
+        );
+        break;
+      }
+
+      case "item/tool/requestUserInput": {
+        await this.submitToolUserInputResponse(
+          threadId,
+          requestId,
+          ownerClientId,
+          parsedResponse,
+        );
+        break;
+      }
+
+      case "applyPatchApproval":
+      case "execCommandApproval": {
+        await this.submitLegacyApprovalResponse(requestId, parsedResponse);
+        break;
+      }
+
+      case "item/tool/call":
+      case "account/chatgptAuthTokens/refresh":
+      case "item/plan/requestImplementation":
+        throw new Error(
+          `No submit responder registered for request method ${resolvedRequest.request.method}`,
+        );
+    }
+  }
+
+  private async submitCommandApprovalResponse(
+    threadId: string,
+    requestId: UserInputRequestId,
+    ownerClientId: string | null,
+    parsedResponse: UserInputResponsePayload,
+  ): Promise<void> {
+    const approvalResponse =
+      parseCommandExecutionRequestApprovalResponse(parsedResponse);
+    await this.ipcClient.sendRequestAndWait(
+      "thread-follower-command-approval-decision",
+      {
+        conversationId: threadId,
+        requestId,
+        decision: approvalResponse.decision,
+      },
+      {
+        ...(ownerClientId ? { targetClientId: ownerClientId } : {}),
+        version: 1,
+      },
+    );
+  }
+
+  private async submitFileApprovalResponse(
+    threadId: string,
+    requestId: UserInputRequestId,
+    ownerClientId: string | null,
+    parsedResponse: UserInputResponsePayload,
+  ): Promise<void> {
+    const approvalResponse =
+      parseFileChangeRequestApprovalResponse(parsedResponse);
+    await this.ipcClient.sendRequestAndWait(
+      "thread-follower-file-approval-decision",
+      {
+        conversationId: threadId,
+        requestId,
+        decision: approvalResponse.decision,
+      },
+      {
+        ...(ownerClientId ? { targetClientId: ownerClientId } : {}),
+        version: 1,
+      },
+    );
+  }
+
+  private async submitToolUserInputResponse(
+    threadId: string,
+    requestId: UserInputRequestId,
+    ownerClientId: string | null,
+    parsedResponse: UserInputResponsePayload,
+  ): Promise<void> {
+    const userInputResponse =
+      parseToolRequestUserInputResponsePayload(parsedResponse);
+    const ownerClientIdForResult = ownerClientId ?? "app-server";
+
+    if (ownerClientIdForResult === "app-server") {
+      await this.runAppServerCall(() =>
+        this.appClient.submitUserInput(requestId, userInputResponse),
+      );
+      return;
+    }
+
+    await this.ipcClient.sendRequestAndWait(
+      "thread-follower-submit-user-input",
+      {
+        conversationId: threadId,
+        requestId,
+        response: userInputResponse,
+      },
+      {
+        targetClientId: ownerClientIdForResult,
+        version: 1,
+      },
+    );
+  }
+
+  private async submitLegacyApprovalResponse(
+    requestId: UserInputRequestId,
+    parsedResponse: UserInputResponsePayload,
+  ): Promise<void> {
+    const approvalResponse =
+      LegacyReviewApprovalResponseSchema.parse(parsedResponse);
+    await this.runAppServerCall(() =>
+      this.appClient.submitUserInput(requestId, approvalResponse),
+    );
   }
 
   private findPendingRequest(
@@ -1084,6 +1212,16 @@ export class CodexAgentAdapter implements AgentAdapter {
     }
 
     this.upsertPendingAppServerRequest(threadId, parsedRequest.data);
+    if (parsedRequest.data.completed === true) {
+      this.removePendingThreadRequestOwner(threadId, parsedRequest.data.id);
+    } else {
+      this.upsertPendingThreadRequestOwner(
+        threadId,
+        parsedRequest.data.id,
+        null,
+        true,
+      );
+    }
     this.notifyThreadStateChanged(threadId);
     this.emitAppServerRequest({
       threadId,
@@ -1133,6 +1271,97 @@ export class CodexAgentAdapter implements AgentAdapter {
     }
 
     this.pendingAppServerRequestsByThreadId.set(threadId, next);
+  }
+
+  private findPendingThreadRequestOwner(
+    threadId: string,
+    requestId: UserInputRequestId,
+  ): PendingThreadRequestOwnerEntry | null {
+    const owners = this.pendingThreadRequestOwnersByThreadId.get(threadId);
+    return (
+      owners?.find((entry) => requestIdsMatch(entry.requestId, requestId)) ??
+      null
+    );
+  }
+
+  private upsertPendingThreadRequestOwner(
+    threadId: string,
+    requestId: UserInputRequestId,
+    ownerClientId: string | null,
+    replaceExisting: boolean,
+  ): void {
+    const current =
+      this.pendingThreadRequestOwnersByThreadId.get(threadId) ?? [];
+    const existing = current.find((entry) =>
+      requestIdsMatch(entry.requestId, requestId),
+    );
+    if (existing && !replaceExisting) {
+      return;
+    }
+
+    const next = current.filter(
+      (entry) => !requestIdsMatch(entry.requestId, requestId),
+    );
+    next.push({
+      requestId,
+      ownerClientId,
+    });
+    this.pendingThreadRequestOwnersByThreadId.set(threadId, next);
+  }
+
+  private removePendingThreadRequestOwner(
+    threadId: string,
+    requestId: UserInputRequestId,
+  ): void {
+    const current = this.pendingThreadRequestOwnersByThreadId.get(threadId);
+    if (!current) {
+      return;
+    }
+
+    const next = current.filter((entry) =>
+      !requestIdsMatch(entry.requestId, requestId),
+    );
+    if (next.length === 0) {
+      this.pendingThreadRequestOwnersByThreadId.delete(threadId);
+      return;
+    }
+
+    this.pendingThreadRequestOwnersByThreadId.set(threadId, next);
+  }
+
+  private syncPendingThreadRequestOwners(
+    threadId: string,
+    state: ThreadConversationState,
+    ownerClientId: string | null,
+    replaceExisting: boolean,
+  ): void {
+    if (replaceExisting) {
+      const current =
+        this.pendingThreadRequestOwnersByThreadId.get(threadId) ?? [];
+      const next = current.filter((entry) =>
+        state.requests.find((request) =>
+          requestIdsMatch(request.id, entry.requestId),
+        ),
+      );
+      if (next.length === 0) {
+        this.pendingThreadRequestOwnersByThreadId.delete(threadId);
+      } else {
+        this.pendingThreadRequestOwnersByThreadId.set(threadId, next);
+      }
+    }
+
+    for (const request of state.requests) {
+      if (request.completed === true) {
+        this.removePendingThreadRequestOwner(threadId, request.id);
+        continue;
+      }
+      this.upsertPendingThreadRequestOwner(
+        threadId,
+        request.id,
+        ownerClientId,
+        replaceExisting,
+      );
+    }
   }
 
   private mergePendingAppServerRequests(
@@ -1381,6 +1610,12 @@ export class CodexAgentAdapter implements AgentAdapter {
     this.canonicalThreadStateErrorById.delete(threadId);
     this.setThreadTitle(threadId, nextThread.title);
     this.syncActiveTurnIdFromThreadState(threadId, nextThread);
+    this.syncPendingThreadRequestOwners(
+      threadId,
+      nextThread,
+      sourceClientId,
+      origin === "stream",
+    );
 
     if (!appendSyntheticSnapshotEvent) {
       return nextThread;

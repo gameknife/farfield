@@ -25,7 +25,10 @@ const connectionListeners: Array<
 > = [];
 const serverRequestListeners: AppServerRequestListener[] = [];
 const serverNotificationListeners: AppServerNotificationListener[] = [];
-const submitUserInputCalls: UserInputRequestId[] = [];
+const submitUserInputCalls: Array<{
+  requestId: UserInputRequestId;
+  response: object;
+}> = [];
 const startTurnCalls: TurnStartParams[] = [];
 const ipcRequestCalls: Array<{
   method: string;
@@ -105,9 +108,9 @@ vi.mock("@farfield/api", async (importOriginal) => {
 
     public async submitUserInput(
       requestId: UserInputRequestId,
-      _response: object,
+      response: object,
     ): Promise<void> {
-      submitUserInputCalls.push(requestId);
+      submitUserInputCalls.push({ requestId, response });
     }
 
     public async startTurn(params: TurnStartParams): Promise<void> {
@@ -229,6 +232,24 @@ function createCommandApprovalRequest(
   );
 }
 
+function createFileApprovalRequest(
+  threadId: string,
+  requestId: UserInputRequestId,
+): AppServerServerRequest {
+  return AppServerServerRequestSchema.parse(
+    ThreadConversationRequestSchema.parse({
+      id: requestId,
+      method: "item/fileChange/requestApproval",
+      params: {
+        threadId,
+        turnId: `turn-${String(requestId)}`,
+        itemId: `item-${String(requestId)}`,
+        reason: "Allow file change",
+      },
+    }),
+  );
+}
+
 function createLegacyExecCommandApprovalRequest(
   threadId: string,
   requestId: UserInputRequestId,
@@ -245,6 +266,25 @@ function createLegacyExecCommandApprovalRequest(
         cwd: "/tmp/project",
         parsedCmd: [],
         reason: "Allow echo",
+      },
+    }),
+  );
+}
+
+function createApplyPatchApprovalRequest(
+  threadId: string,
+  requestId: UserInputRequestId,
+): AppServerServerRequest {
+  return AppServerServerRequestSchema.parse(
+    ThreadConversationRequestSchema.parse({
+      id: requestId,
+      method: "applyPatchApproval",
+      params: {
+        conversationId: threadId,
+        callId: `call-${String(requestId)}`,
+        fileChanges: {},
+        reason: "Allow patch",
+        grantRoot: null,
       },
     }),
   );
@@ -281,6 +321,25 @@ function createUserInputRequest(
             ],
           },
         ],
+      },
+    }),
+  );
+}
+
+function createToolCallRequest(
+  threadId: string,
+  requestId: UserInputRequestId,
+): AppServerServerRequest {
+  return AppServerServerRequestSchema.parse(
+    ThreadConversationRequestSchema.parse({
+      id: requestId,
+      method: "item/tool/call",
+      params: {
+        threadId,
+        turnId: `turn-${String(requestId)}`,
+        callId: `call-${String(requestId)}`,
+        tool: "example",
+        arguments: {},
       },
     }),
   );
@@ -576,24 +635,60 @@ describe("CodexAgentAdapter app-server pending requests", () => {
     expect(result.thread.requests).toHaveLength(0);
   });
 
-  it("submits app-server request ids even when readThread omits the request", async () => {
+  it("rejects request ids that are not present in local thread state", async () => {
     const threadId = "thread-submit-request-id-directly";
     const adapter = createAdapter();
     readThreadResponse = {
       thread: createThreadState(threadId),
     };
 
-    await adapter.submitUserInput({
-      threadId,
-      requestId: 11,
-      response: { decision: "decline" },
-    });
+    await expect(
+      adapter.submitUserInput({
+        threadId,
+        requestId: 11,
+        response: { decision: "decline" },
+      }),
+    ).rejects.toThrow(
+      "Request 11 is not present in thread state for thread thread-submit-request-id-directly",
+    );
 
-    expect(submitUserInputCalls).toEqual([11]);
+    expect(submitUserInputCalls).toEqual([]);
     expect(readThreadCalls).toEqual([]);
   });
 
-  it("routes owned user input requests through the desktop follower client", async () => {
+  it("routes file approval requests through the registered responder", async () => {
+    const threadId = "thread-owned-file-approval-request";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+
+    emitServerRequest(createFileApprovalRequest(threadId, 18));
+
+    await adapter.submitUserInput({
+      threadId,
+      ownerClientId: "client-1",
+      requestId: 18,
+      response: { decision: "accept" },
+    });
+
+    expect(submitUserInputCalls).toEqual([]);
+    expect(ipcRequestCalls).toEqual([
+      {
+        method: "thread-follower-file-approval-decision",
+        params: {
+          conversationId: threadId,
+          requestId: 18,
+          decision: "accept",
+        },
+        options: {
+          version: 1,
+        },
+      },
+    ]);
+  });
+
+  it("keeps app-server user input requests on the app-server responder", async () => {
     const threadId = "thread-owned-user-input-request";
     const adapter = createAdapter();
     readThreadResponse = {
@@ -615,27 +710,81 @@ describe("CodexAgentAdapter app-server pending requests", () => {
       },
     });
 
-    expect(submitUserInputCalls).toEqual([]);
-    expect(ipcRequestCalls).toEqual([
+    expect(submitUserInputCalls).toEqual([
       {
-        method: "thread-follower-submit-user-input",
-        params: {
-          conversationId: threadId,
-          requestId: 12,
-          response: {
-            answers: {
-              choice: {
-                answers: ["A"],
-              },
+        requestId: 12,
+        response: {
+          answers: {
+            choice: {
+              answers: ["A"],
             },
           },
         },
-        options: {
-          targetClientId: "client-1",
-          version: 1,
-        },
       },
     ]);
+    expect(ipcRequestCalls).toEqual([]);
+  });
+
+  it("routes stream-owned user input requests through their recorded owner", async () => {
+    const threadId = "thread-stream-owned-user-input-request";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+
+    await adapter.start();
+    emitIpcFrame({
+      type: "broadcast",
+      method: "thread-stream-state-changed",
+      sourceClientId: "owner-from-stream",
+      version: 6,
+      params: {
+        conversationId: threadId,
+        type: "thread-stream-state-changed",
+        version: 6,
+        change: {
+          type: "snapshot",
+          conversationState: createThreadState(threadId, [
+            ThreadConversationRequestSchema.parse(
+              createUserInputRequest(threadId, 20),
+            ),
+          ]),
+        },
+      },
+    });
+
+    await adapter.submitUserInput({
+      threadId,
+      ownerClientId: "stale-selected-owner",
+      requestId: 20,
+      response: {
+        answers: {
+          choice: {
+            answers: ["A"],
+          },
+        },
+      },
+    });
+
+    expect(submitUserInputCalls).toEqual([]);
+    expect(ipcRequestCalls).toContainEqual({
+      method: "thread-follower-submit-user-input",
+      params: {
+        conversationId: threadId,
+        requestId: 20,
+        response: {
+          answers: {
+            choice: {
+              answers: ["A"],
+            },
+          },
+        },
+      },
+      options: {
+        targetClientId: "owner-from-stream",
+        version: 1,
+      },
+    });
   });
 
   it("submits unowned user input requests to app server", async () => {
@@ -659,7 +808,72 @@ describe("CodexAgentAdapter app-server pending requests", () => {
       },
     });
 
-    expect(submitUserInputCalls).toEqual([13]);
+    expect(submitUserInputCalls).toEqual([
+      {
+        requestId: 13,
+        response: {
+          answers: {
+            choice: {
+              answers: ["B"],
+            },
+          },
+        },
+      },
+    ]);
+    expect(ipcRequestCalls).toEqual([]);
+  });
+
+  it("submits legacy approval requests through the app server responder", async () => {
+    const threadId = "thread-legacy-approval-submit";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+
+    emitServerRequest(createApplyPatchApprovalRequest(threadId, 21));
+
+    await adapter.submitUserInput({
+      threadId,
+      ownerClientId: "client-1",
+      requestId: 21,
+      response: { decision: "approved" },
+    });
+
+    expect(ipcRequestCalls).toEqual([]);
+    expect(submitUserInputCalls).toEqual([
+      {
+        requestId: 21,
+        response: { decision: "approved" },
+      },
+    ]);
+  });
+
+  it("fails hard when a request has no submit responder", async () => {
+    const threadId = "thread-tool-call-submit";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+
+    emitServerRequest(createToolCallRequest(threadId, 22));
+
+    await expect(
+      adapter.submitUserInput({
+        threadId,
+        requestId: 22,
+        response: {
+          answers: {
+            choice: {
+              answers: ["A"],
+            },
+          },
+        },
+      }),
+    ).rejects.toThrow(
+      "No submit responder registered for request method item/tool/call",
+    );
+
+    expect(submitUserInputCalls).toEqual([]);
     expect(ipcRequestCalls).toEqual([]);
   });
 
