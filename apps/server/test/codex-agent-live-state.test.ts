@@ -15,6 +15,7 @@ import {
 } from "@farfield/protocol";
 import {
   AppServerRpcError,
+  DesktopIpcError,
   type AppServerNotificationListener,
   type AppServerRequestListener,
   type SendRequestOptions,
@@ -42,6 +43,7 @@ const readThreadIncludeTurnsCalls: boolean[] = [];
 let readThreadResponse: AppServerReadThreadResponse;
 let listThreadsResponse: AppServerListThreadsResponse;
 let readThreadError: Error | null = null;
+let ipcRequestError: Error | null = null;
 
 vi.mock("@farfield/api", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@farfield/api")>();
@@ -190,6 +192,11 @@ vi.mock("@farfield/api", async (importOriginal) => {
       options: SendRequestOptions = {},
     ) {
       ipcRequestCalls.push({ method, params, options });
+      if (ipcRequestError) {
+        const error = ipcRequestError;
+        ipcRequestError = null;
+        throw error;
+      }
       return IpcResponseFrameSchema.parse({
         type: "response",
         requestId: "request-1",
@@ -388,6 +395,7 @@ describe("CodexAgentAdapter app-server pending requests", () => {
     readThreadCalls.splice(0, readThreadCalls.length);
     readThreadIncludeTurnsCalls.splice(0, readThreadIncludeTurnsCalls.length);
     readThreadError = null;
+    ipcRequestError = null;
 
     listThreadsResponse = {
       data: [],
@@ -452,6 +460,73 @@ describe("CodexAgentAdapter app-server pending requests", () => {
       {
         threadId,
         input: [{ type: "text", text: "hello from Farfield" }],
+        model: "gpt-5.5",
+        attachments: [],
+      },
+    ]);
+  });
+
+  it("clears stale owner client and sends through app server when owner disappears", async () => {
+    const threadId = "thread-stale-owner-send";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+    await adapter.start();
+    ipcRequestError = new DesktopIpcError(
+      "IPC thread-follower-start-turn failed: no-client-found",
+    );
+
+    await adapter.sendMessage({
+      threadId,
+      ownerClientId: "stale-client",
+      text: "hello after stale owner",
+      model: "gpt-5.5",
+    });
+
+    expect(ipcRequestCalls).toContainEqual({
+      method: "thread-follower-start-turn",
+      params: {
+        conversationId: threadId,
+        turnStartParams: {
+          threadId,
+          input: [{ type: "text", text: "hello after stale owner" }],
+          model: "gpt-5.5",
+          attachments: [],
+        },
+        isSteering: false,
+      },
+      options: {
+        targetClientId: "stale-client",
+        version: 1,
+      },
+    });
+    expect(startTurnCalls).toEqual([
+      {
+        threadId,
+        input: [{ type: "text", text: "hello after stale owner" }],
+        model: "gpt-5.5",
+        attachments: [],
+      },
+    ]);
+
+    await adapter.sendMessage({
+      threadId,
+      text: "hello without stale owner",
+      model: "gpt-5.5",
+    });
+
+    expect(ipcRequestCalls).toHaveLength(1);
+    expect(startTurnCalls).toEqual([
+      {
+        threadId,
+        input: [{ type: "text", text: "hello after stale owner" }],
+        model: "gpt-5.5",
+        attachments: [],
+      },
+      {
+        threadId,
+        input: [{ type: "text", text: "hello without stale owner" }],
         model: "gpt-5.5",
         attachments: [],
       },

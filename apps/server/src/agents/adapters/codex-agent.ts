@@ -651,7 +651,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     if (text.length === 0) {
       throw new Error("Message text is required");
     }
-    const visibleOwnerClientId = this.resolveVisibleOwnerClientId(
+    let visibleOwnerClientId = this.resolveVisibleOwnerClientId(
       input.threadId,
       input.ownerClientId,
     );
@@ -662,23 +662,31 @@ export class CodexAgentAdapter implements AgentAdapter {
     const sendTurn = async (): Promise<void> => {
       if (input.isSteering === true) {
         if (visibleOwnerClientId) {
-          await this.startTurnThroughOwnerClient(
-            input.threadId,
-            visibleOwnerClientId,
-            {
-              threadId: input.threadId,
-              input: [{ type: "text", text }],
-              ...(input.cwd ? { cwd: input.cwd } : {}),
-              ...(input.model ? { model: input.model } : {}),
-              ...(input.effort ? { effort: input.effort } : {}),
-              ...(input.approvalPolicy
-                ? { approvalPolicy: input.approvalPolicy }
-                : {}),
-              attachments: [],
-            },
-            true,
-          );
-          return;
+          try {
+            await this.startTurnThroughOwnerClient(
+              input.threadId,
+              visibleOwnerClientId,
+              {
+                threadId: input.threadId,
+                input: [{ type: "text", text }],
+                ...(input.cwd ? { cwd: input.cwd } : {}),
+                ...(input.model ? { model: input.model } : {}),
+                ...(input.effort ? { effort: input.effort } : {}),
+                ...(input.approvalPolicy
+                  ? { approvalPolicy: input.approvalPolicy }
+                  : {}),
+                attachments: [],
+              },
+              true,
+            );
+            return;
+          } catch (error) {
+            if (!isIpcNoClientFoundMessage(toErrorMessage(error))) {
+              throw error;
+            }
+            this.clearVisibleOwnerClientId(input.threadId, visibleOwnerClientId);
+            visibleOwnerClientId = null;
+          }
         }
 
         const activeTurnId = await this.getActiveTurnId(input.threadId);
@@ -729,13 +737,21 @@ export class CodexAgentAdapter implements AgentAdapter {
         attachments: [],
       });
       if (visibleOwnerClientId) {
-        await this.startTurnThroughOwnerClient(
-          input.threadId,
-          visibleOwnerClientId,
-          turnStartParams,
-          false,
-        );
-        return;
+        try {
+          await this.startTurnThroughOwnerClient(
+            input.threadId,
+            visibleOwnerClientId,
+            turnStartParams,
+            false,
+          );
+          return;
+        } catch (error) {
+          if (!isIpcNoClientFoundMessage(toErrorMessage(error))) {
+            throw error;
+          }
+          this.clearVisibleOwnerClientId(input.threadId, visibleOwnerClientId);
+          visibleOwnerClientId = null;
+        }
       }
       await this.appClient.startTurn(turnStartParams);
     };
@@ -2374,6 +2390,16 @@ export class CodexAgentAdapter implements AgentAdapter {
     return null;
   }
 
+  private clearVisibleOwnerClientId(
+    threadId: string,
+    ownerClientId: string,
+  ): void {
+    const mapped = this.threadOwnerById.get(threadId);
+    if (mapped === ownerClientId) {
+      this.threadOwnerById.delete(threadId);
+    }
+  }
+
   private applyPendingCollaborationMode(
     thread: ThreadConversationState,
   ): ThreadConversationState {
@@ -2804,7 +2830,11 @@ export function isIpcNoClientFoundError(error: Error | null): boolean {
   if (!(error instanceof DesktopIpcError)) {
     return false;
   }
-  const normalized = error.message.trim().toLowerCase();
+  return isIpcNoClientFoundMessage(error.message);
+}
+
+function isIpcNoClientFoundMessage(message: string): boolean {
+  const normalized = message.trim().toLowerCase();
   return normalized.includes("no-client-found");
 }
 
