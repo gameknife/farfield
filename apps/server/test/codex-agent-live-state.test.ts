@@ -1,27 +1,30 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  AppServerServerRequestSchema,
   IpcResponseFrameSchema,
   ThreadConversationRequestSchema,
-  parseIpcFrame,
   parseThreadConversationState,
-  parseThreadStreamStateChangedBroadcast,
   type AppServerListThreadsResponse,
   type AppServerReadThreadResponse,
+  type AppServerServerRequest,
   type IpcFrame,
   type ThreadConversationRequest,
   type ThreadConversationState,
   type UserInputRequestId,
 } from "@farfield/protocol";
 import type {
+  AppServerNotificationListener,
+  AppServerRequestListener,
   SendRequestOptions,
-  SubmitCommandApprovalInput,
 } from "@farfield/api";
 
 const frameListeners: Array<(frame: IpcFrame) => void> = [];
 const connectionListeners: Array<
   (state: { connected: boolean; reason?: string }) => void
 > = [];
-const commandApprovalCalls: SubmitCommandApprovalInput[] = [];
+const serverRequestListeners: AppServerRequestListener[] = [];
+const serverNotificationListeners: AppServerNotificationListener[] = [];
+const submitUserInputCalls: UserInputRequestId[] = [];
 
 let readThreadResponse: AppServerReadThreadResponse;
 let listThreadsResponse: AppServerListThreadsResponse;
@@ -34,9 +37,27 @@ vi.mock("@farfield/api", async (importOriginal) => {
 
     public async close(): Promise<void> {}
 
-    public setIncomingMessageHandler(
-      _handler: ((message: object) => void) | null,
-    ): void {}
+    public onServerNotification(
+      listener: AppServerNotificationListener,
+    ): () => void {
+      serverNotificationListeners.push(listener);
+      return () => {
+        const index = serverNotificationListeners.indexOf(listener);
+        if (index >= 0) {
+          serverNotificationListeners.splice(index, 1);
+        }
+      };
+    }
+
+    public onServerRequest(listener: AppServerRequestListener): () => void {
+      serverRequestListeners.push(listener);
+      return () => {
+        const index = serverRequestListeners.indexOf(listener);
+        if (index >= 0) {
+          serverRequestListeners.splice(index, 1);
+        }
+      };
+    }
 
     public async listThreads(
       _options: object,
@@ -74,9 +95,11 @@ vi.mock("@farfield/api", async (importOriginal) => {
     }
 
     public async submitUserInput(
-      _requestId: UserInputRequestId,
+      requestId: UserInputRequestId,
       _response: object,
-    ): Promise<void> {}
+    ): Promise<void> {
+      submitUserInputCalls.push(requestId);
+    }
   }
 
   class MockDesktopIpcClient {
@@ -151,31 +174,10 @@ vi.mock("@farfield/api", async (importOriginal) => {
     }
   }
 
-  class MockCodexMonitorService {
-    public constructor(_ipcClient: MockDesktopIpcClient) {}
-
-    public async submitCommandApprovalDecision(
-      input: SubmitCommandApprovalInput,
-    ): Promise<void> {
-      commandApprovalCalls.push(input);
-    }
-
-    public async submitFileApprovalDecision(_input: object): Promise<void> {}
-
-    public async submitUserInput(_input: object): Promise<void> {}
-
-    public async sendMessage(_input: object): Promise<void> {}
-
-    public async setCollaborationMode(_input: object): Promise<void> {}
-
-    public async interrupt(_input: object): Promise<void> {}
-  }
-
   return {
     ...actual,
     AppServerClient: MockAppServerClient,
     DesktopIpcClient: MockDesktopIpcClient,
-    CodexMonitorService: MockCodexMonitorService,
   };
 });
 
@@ -195,98 +197,27 @@ function createThreadState(
 function createCommandApprovalRequest(
   threadId: string,
   requestId: UserInputRequestId,
-): ThreadConversationRequest {
-  return ThreadConversationRequestSchema.parse({
-    id: requestId,
-    method: "item/commandExecution/requestApproval",
-    params: {
-      threadId,
-      turnId: `turn-${String(requestId)}`,
-      itemId: `item-${String(requestId)}`,
-      command: "/bin/zsh -lc 'open -a Calculator'",
-      reason: "Allow Calculator",
-    },
-  });
-}
-
-function createSnapshotEvent(
-  threadId: string,
-  state: ThreadConversationState,
-  version: number,
-): IpcFrame {
-  return parseThreadStreamStateChangedBroadcast({
-    type: "broadcast",
-    method: "thread-stream-state-changed",
-    sourceClientId: "client-1",
-    version,
-    params: {
-      conversationId: threadId,
-      type: "thread-stream-state-changed",
-      version,
-      change: {
-        type: "snapshot",
-        conversationState: state,
+  completed = false,
+): AppServerServerRequest {
+  return AppServerServerRequestSchema.parse(
+    ThreadConversationRequestSchema.parse({
+      id: requestId,
+      method: "item/commandExecution/requestApproval",
+      completed,
+      params: {
+        threadId,
+        turnId: `turn-${String(requestId)}`,
+        itemId: `item-${String(requestId)}`,
+        command: "/bin/zsh -lc 'open -a Calculator'",
+        reason: "Allow Calculator",
       },
-    },
-  });
+    }),
+  );
 }
 
-function createApprovalPatchEvent(
-  threadId: string,
-  requestId: UserInputRequestId,
-  version: number,
-): IpcFrame {
-  return parseThreadStreamStateChangedBroadcast({
-    type: "broadcast",
-    method: "thread-stream-state-changed",
-    sourceClientId: "client-1",
-    version,
-    params: {
-      conversationId: threadId,
-      type: "thread-stream-state-changed",
-      version,
-      change: {
-        type: "patches",
-        patches: [
-          {
-            op: "add",
-            path: ["requests", 0],
-            value: createCommandApprovalRequest(threadId, requestId),
-          },
-        ],
-      },
-    },
-  });
-}
-
-function createInformationalBroadcast(threadId: string): IpcFrame {
-  return parseIpcFrame({
-    type: "broadcast",
-    method: "thread-read-state-changed",
-    sourceClientId: "client-1",
-    version: 1,
-    params: {
-      conversationId: threadId,
-      hasUnreadTurn: false,
-    },
-  });
-}
-
-function createMalformedStreamBroadcast(threadId: string): IpcFrame {
-  return parseIpcFrame({
-    type: "broadcast",
-    method: "thread-stream-state-changed",
-    sourceClientId: "client-1",
-    version: 1,
-    params: {
-      conversationId: threadId,
-    },
-  });
-}
-
-function emitFrame(frame: IpcFrame): void {
-  for (const listener of frameListeners) {
-    listener(frame);
+function emitServerRequest(request: AppServerServerRequest): void {
+  for (const listener of serverRequestListeners) {
+    listener(request);
   }
 }
 
@@ -300,11 +231,13 @@ function createAdapter(): CodexAgentAdapter {
   });
 }
 
-describe("CodexAgentAdapter live state", () => {
+describe("CodexAgentAdapter app-server pending requests", () => {
   beforeEach(() => {
     frameListeners.splice(0, frameListeners.length);
     connectionListeners.splice(0, connectionListeners.length);
-    commandApprovalCalls.splice(0, commandApprovalCalls.length);
+    serverRequestListeners.splice(0, serverRequestListeners.length);
+    serverNotificationListeners.splice(0, serverNotificationListeners.length);
+    submitUserInputCalls.splice(0, submitUserInputCalls.length);
 
     listThreadsResponse = {
       data: [],
@@ -315,133 +248,14 @@ describe("CodexAgentAdapter live state", () => {
     };
   });
 
-  it("ignores unrelated broadcasts when reducing live thread state", async () => {
-    const threadId = "thread-mixed-stream";
-    const adapter = createAdapter();
-
-    await adapter.start();
-    emitFrame(createSnapshotEvent(threadId, createThreadState(threadId), 1));
-    emitFrame(createInformationalBroadcast(threadId));
-    emitFrame(createApprovalPatchEvent(threadId, 41, 2));
-
-    const liveState = await adapter.readLiveState(threadId);
-
-    expect(liveState.liveStateError).toBeNull();
-    expect(liveState.conversationState?.requests).toHaveLength(1);
-    expect(liveState.conversationState?.requests[0]?.id).toBe(41);
-    expect(liveState.conversationState?.requests[0]?.method).toBe(
-      "item/commandExecution/requestApproval",
-    );
-
-    await adapter.stop();
-  });
-
-  it("keeps repeated approvals actionable in the same thread", async () => {
-    const threadId = "thread-repeated-approvals";
+  it("merges pending app-server requests into readThread results", async () => {
+    const threadId = "thread-app-server-pending";
     const adapter = createAdapter();
     readThreadResponse = {
       thread: createThreadState(threadId),
     };
 
-    await adapter.start();
-    emitFrame(createSnapshotEvent(threadId, createThreadState(threadId), 1));
-    emitFrame(createApprovalPatchEvent(threadId, 0, 2));
-
-    const firstLiveState = await adapter.readLiveState(threadId);
-    expect(firstLiveState.liveStateError).toBeNull();
-    expect(firstLiveState.conversationState?.requests[0]?.id).toBe(0);
-
-    await adapter.submitUserInput({
-      threadId,
-      requestId: 0,
-      response: {
-        decision: "accept",
-      },
-    });
-
-    expect(commandApprovalCalls).toHaveLength(1);
-    expect(commandApprovalCalls[0]?.threadId).toBe(threadId);
-    expect(commandApprovalCalls[0]?.requestId).toBe(0);
-
-    emitFrame(createSnapshotEvent(threadId, createThreadState(threadId), 3));
-    emitFrame(createInformationalBroadcast(threadId));
-    emitFrame(createApprovalPatchEvent(threadId, 1, 4));
-
-    const secondLiveState = await adapter.readLiveState(threadId);
-    expect(secondLiveState.liveStateError).toBeNull();
-    expect(secondLiveState.conversationState?.requests).toHaveLength(1);
-    expect(secondLiveState.conversationState?.requests[0]?.id).toBe(1);
-
-    await adapter.submitUserInput({
-      threadId,
-      requestId: 1,
-      response: {
-        decision: "accept",
-      },
-    });
-
-    expect(commandApprovalCalls).toHaveLength(2);
-    expect(commandApprovalCalls[1]?.threadId).toBe(threadId);
-    expect(commandApprovalCalls[1]?.requestId).toBe(1);
-
-    await adapter.stop();
-  });
-
-  it("prefers live thread state over stale readThread data for pending approvals", async () => {
-    const threadId = "thread-read-thread-overlay";
-    const adapter = createAdapter();
-    readThreadResponse = {
-      thread: parseThreadConversationState({
-        id: threadId,
-        turns: [
-          {
-            id: "turn-stale",
-            status: "interrupted",
-            items: [
-              {
-                id: "item-user",
-                type: "userMessage",
-                content: [{ type: "text", text: "open calculator" }],
-              },
-            ],
-          },
-        ],
-        requests: [],
-      }),
-    };
-
-    await adapter.start();
-    emitFrame(
-      createSnapshotEvent(
-        threadId,
-        parseThreadConversationState({
-          id: threadId,
-          turns: [
-            {
-              id: "turn-stale",
-              status: "inProgress",
-              items: [
-                {
-                  id: "item-user",
-                  type: "userMessage",
-                  content: [{ type: "text", text: "open calculator" }],
-                },
-                {
-                  id: "item-agent",
-                  type: "agentMessage",
-                  text: "Opening Calculator now.",
-                },
-              ],
-            },
-          ],
-          requests: [],
-        }),
-        1,
-      ),
-    );
-    emitFrame(createMalformedStreamBroadcast(threadId));
-    emitFrame(createInformationalBroadcast(threadId));
-    emitFrame(createApprovalPatchEvent(threadId, 7, 2));
+    emitServerRequest(createCommandApprovalRequest(threadId, 41));
 
     const result = await adapter.readThread({
       threadId,
@@ -449,29 +263,59 @@ describe("CodexAgentAdapter live state", () => {
     });
 
     expect(result.thread.requests).toHaveLength(1);
-    expect(result.thread.requests[0]?.id).toBe(7);
-    expect(result.thread.turns.at(-1)?.status).toBe("inProgress");
-    expect(result.thread.turns.at(-1)?.items).toHaveLength(2);
-
-    await adapter.stop();
+    expect(result.thread.requests[0]?.id).toBe(41);
+    expect(result.thread.requests[0]?.method).toBe(
+      "item/commandExecution/requestApproval",
+    );
   });
 
-  it("still reports parse failures for malformed thread stream events", async () => {
-    const threadId = "thread-malformed-stream";
+  it("submits pending app-server requests even before readThread includes them", async () => {
+    const threadId = "thread-submit-app-server-pending";
     const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
 
-    await adapter.start();
-    emitFrame(createSnapshotEvent(threadId, createThreadState(threadId), 1));
-    emitFrame(createMalformedStreamBroadcast(threadId));
-    emitFrame(createApprovalPatchEvent(threadId, 17, 2));
+    emitServerRequest(createCommandApprovalRequest(threadId, 7));
 
-    const liveState = await adapter.readLiveState(threadId);
+    await adapter.submitUserInput({
+      threadId,
+      requestId: 7,
+      response: { decision: "accept" },
+    });
 
-    expect(liveState.liveStateError?.kind).toBe("parseFailed");
-    expect(liveState.liveStateError?.eventIndex).toBe(1);
-    expect(liveState.conversationState?.requests).toHaveLength(1);
-    expect(liveState.conversationState?.requests[0]?.id).toBe(17);
+    expect(submitUserInputCalls).toEqual([7]);
 
-    await adapter.stop();
+    const result = await adapter.readThread({
+      threadId,
+      includeTurns: true,
+    });
+    expect(result.thread.requests).toHaveLength(0);
+  });
+
+  it("removes cached pending requests when app-server marks them complete", async () => {
+    const threadId = "thread-completed-app-server-request";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+
+    emitServerRequest(createCommandApprovalRequest(threadId, 9));
+    expect(
+      (
+        await adapter.readThread({
+          threadId,
+          includeTurns: true,
+        })
+      ).thread.requests,
+    ).toHaveLength(1);
+
+    emitServerRequest(createCommandApprovalRequest(threadId, 9, true));
+
+    const result = await adapter.readThread({
+      threadId,
+      includeTurns: true,
+    });
+    expect(result.thread.requests).toHaveLength(0);
   });
 });

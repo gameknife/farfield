@@ -2366,6 +2366,7 @@ function extractThreadIdFromConversationRequest(
     case "account/chatgptAuthTokens/refresh":
       return null;
   }
+  return null;
 }
 
 function isTerminalTurnStatus(status: string): boolean {
