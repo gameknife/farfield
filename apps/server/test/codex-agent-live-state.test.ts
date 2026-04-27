@@ -346,6 +346,85 @@ describe("CodexAgentAdapter app-server pending requests", () => {
     ]);
   });
 
+  it("routes owned collaboration mode changes through the desktop follower client", async () => {
+    const threadId = "thread-owned-mode";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+    await adapter.start();
+
+    const result = await adapter.setCollaborationMode({
+      threadId,
+      ownerClientId: "client-1",
+      collaborationMode: {
+        mode: "plan",
+        settings: {
+          model: "gpt-5.5",
+          reasoning_effort: "high",
+          developer_instructions: "plan carefully",
+        },
+      },
+    });
+
+    expect(result.ownerClientId).toBe("client-1");
+    expect(ipcRequestCalls).toContainEqual({
+      method: "thread-follower-set-model-and-reasoning",
+      params: {
+        conversationId: threadId,
+        model: "gpt-5.5",
+        reasoningEffort: "high",
+      },
+      options: {
+        targetClientId: "client-1",
+        version: 1,
+        timeoutMs: 5_000,
+      },
+    });
+    expect(ipcRequestCalls).toContainEqual({
+      method: "thread-follower-set-collaboration-mode",
+      params: {
+        conversationId: threadId,
+        collaborationMode: {
+          mode: "plan",
+          settings: {
+            model: "gpt-5.5",
+            reasoning_effort: "high",
+            developer_instructions: "plan carefully",
+          },
+        },
+      },
+      options: {
+        targetClientId: "client-1",
+        version: 1,
+        timeoutMs: 5_000,
+      },
+    });
+  });
+
+  it("keeps unowned collaboration mode changes local", async () => {
+    const threadId = "thread-unowned-mode";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+    await adapter.start();
+
+    const result = await adapter.setCollaborationMode({
+      threadId,
+      collaborationMode: {
+        mode: "default",
+        settings: {
+          model: "gpt-5.5",
+          reasoning_effort: "medium",
+        },
+      },
+    });
+
+    expect(result.ownerClientId).toBe("farfield");
+    expect(ipcRequestCalls).toEqual([]);
+  });
+
   it("merges pending app-server requests into readThread results", async () => {
     const threadId = "thread-app-server-pending";
     const adapter = createAdapter();

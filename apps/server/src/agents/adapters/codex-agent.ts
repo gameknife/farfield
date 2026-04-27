@@ -12,6 +12,7 @@ import {
   type AppServerServerRequest,
   JsonValueSchema,
   ProtocolValidationError,
+  CollaborationModeSchema,
   ContextCompactionItemSchema,
   ErrorItemSchema,
   ModelChangedItemSchema,
@@ -719,6 +720,23 @@ export class CodexAgentAdapter implements AgentAdapter {
     input: AgentSetCollaborationModeInput,
   ): Promise<{ ownerClientId: string }> {
     this.ensureCodexAvailable();
+    const ownerClientId = this.resolveVisibleOwnerClientId(
+      input.threadId,
+      input.ownerClientId,
+    );
+    if (ownerClientId) {
+      this.syncModelAndReasoningThroughOwnerClient(
+        input.threadId,
+        ownerClientId,
+        input.collaborationMode,
+      );
+      this.syncCollaborationModeThroughOwnerClient(
+        input.threadId,
+        ownerClientId,
+        input.collaborationMode,
+      );
+    }
+
     this.pendingCollaborationModeByThreadId.set(
       input.threadId,
       input.collaborationMode,
@@ -731,20 +749,18 @@ export class CodexAgentAdapter implements AgentAdapter {
         input.threadId,
         nextSnapshot,
         this.streamSnapshotOriginByThreadId.get(input.threadId) ?? "readThread",
-        this.resolveVisibleOwnerClientId(input.threadId, input.ownerClientId),
+        ownerClientId,
         true,
       );
       this.broadcastThreadSnapshotToOwner(
         input.threadId,
         nextSnapshot,
-        this.resolveVisibleOwnerClientId(input.threadId, input.ownerClientId),
+        ownerClientId,
       );
     }
 
     return {
-      ownerClientId:
-        this.resolveVisibleOwnerClientId(input.threadId, input.ownerClientId) ??
-        "farfield",
+      ownerClientId: ownerClientId ?? "farfield",
     };
   }
 
@@ -882,6 +898,63 @@ export class CodexAgentAdapter implements AgentAdapter {
         version: 1,
       },
     );
+  }
+
+  private syncModelAndReasoningThroughOwnerClient(
+    threadId: string,
+    ownerClientId: string,
+    collaborationMode: AgentTurnCollaborationMode,
+  ): void {
+    void this.replayRequest(
+      "thread-follower-set-model-and-reasoning",
+      {
+        conversationId: threadId,
+        model: collaborationMode.settings.model,
+        reasoningEffort: collaborationMode.settings.reasoning_effort ?? null,
+      },
+      {
+        targetClientId: ownerClientId,
+        version: 1,
+        timeoutMs: 5_000,
+      },
+    ).catch(() => {
+      logger.warn(
+        {
+          threadId,
+          ownerClientId,
+        },
+        "owner-model-reasoning-sync-failed",
+      );
+    });
+  }
+
+  private syncCollaborationModeThroughOwnerClient(
+    threadId: string,
+    ownerClientId: string,
+    collaborationMode: AgentTurnCollaborationMode,
+  ): void {
+    const parsedCollaborationMode =
+      CollaborationModeSchema.parse(collaborationMode);
+    void this.replayRequest(
+      "thread-follower-set-collaboration-mode",
+      {
+        conversationId: threadId,
+        collaborationMode: parsedCollaborationMode,
+      },
+      {
+        targetClientId: ownerClientId,
+        version: 1,
+        timeoutMs: 5_000,
+      },
+    ).catch(() => {
+      logger.warn(
+        {
+          threadId,
+          ownerClientId,
+        },
+        "owner-collaboration-mode-sync-failed",
+      );
+    });
   }
 
   public async replayRequest(
