@@ -552,7 +552,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     }
     const parsedThread = this.applyPendingCollaborationMode(
       this.mergePendingAppServerRequests(
-        parseThreadConversationState(result.thread),
+        normalizeThreadConversationState(parseThreadConversationState(result.thread)),
         { authoritativeRead: true },
       ),
     );
@@ -2487,13 +2487,36 @@ export function mergeThreadConversationStates(
   currentThread: ThreadConversationState,
   nextReadThread: ThreadConversationState,
 ): ThreadConversationState {
+  const normalizedCurrentThread = normalizeThreadConversationState(currentThread);
+  const normalizedNextReadThread =
+    normalizeThreadConversationState(nextReadThread);
   return parseThreadConversationState({
-    ...currentThread,
-    ...nextReadThread,
-    turns: mergeThreadTurns(currentThread.turns, nextReadThread.turns),
+    ...normalizedCurrentThread,
+    ...normalizedNextReadThread,
+    turns: mergeThreadTurns(
+      normalizedCurrentThread.turns,
+      normalizedNextReadThread.turns,
+    ),
     requests: mergeThreadRequests(
-      currentThread.requests,
-      nextReadThread.requests,
+      normalizedCurrentThread.requests,
+      normalizedNextReadThread.requests,
+    ),
+  });
+}
+
+function normalizeThreadConversationState(
+  thread: ThreadConversationState,
+): ThreadConversationState {
+  return parseThreadConversationState({
+    ...thread,
+    turns: mergeThreadTurns(
+      thread.turns.map((turn) =>
+        ThreadTurnSchema.parse({
+          ...turn,
+          items: mergeTurnItems(turn.items, []),
+        }),
+      ),
+      [],
     ),
   });
 }
@@ -2504,42 +2527,55 @@ function mergeThreadTurns(
 ): ThreadTurn[] {
   const nextTurnsByKey = new Map<string, ThreadTurn>();
   for (const nextTurn of nextTurns) {
-    const key = threadTurnKey(nextTurn);
-    if (!key) {
-      continue;
+    for (const key of threadTurnKeys(nextTurn)) {
+      nextTurnsByKey.set(key, nextTurn);
     }
-    nextTurnsByKey.set(key, nextTurn);
   }
 
   const mergedTurns: ThreadTurn[] = [];
   const seenKeys = new Set<string>();
   for (const currentTurn of currentTurns) {
-    const key = threadTurnKey(currentTurn);
-    if (!key) {
+    const currentKeys = threadTurnKeys(currentTurn);
+    if (currentKeys.some((key) => seenKeys.has(key))) {
+      continue;
+    }
+    if (currentKeys.length === 0) {
       mergedTurns.push(currentTurn);
       continue;
     }
 
-    const nextTurn = nextTurnsByKey.get(key);
+    const nextTurn =
+      currentKeys.map((key) => nextTurnsByKey.get(key)).find(Boolean) ?? null;
     if (!nextTurn) {
       mergedTurns.push(currentTurn);
+      for (const key of currentKeys) {
+        seenKeys.add(key);
+      }
       continue;
     }
 
     mergedTurns.push(mergeThreadTurn(currentTurn, nextTurn));
-    seenKeys.add(key);
+    for (const key of [
+      ...currentKeys,
+      ...threadTurnKeys(nextTurn),
+    ]) {
+      seenKeys.add(key);
+    }
   }
 
   for (const nextTurn of nextTurns) {
-    const key = threadTurnKey(nextTurn);
-    if (!key) {
+    const nextKeys = threadTurnKeys(nextTurn);
+    if (nextKeys.length === 0) {
       mergedTurns.push(nextTurn);
       continue;
     }
-    if (seenKeys.has(key)) {
+    if (nextKeys.some((key) => seenKeys.has(key))) {
       continue;
     }
     mergedTurns.push(nextTurn);
+    for (const key of nextKeys) {
+      seenKeys.add(key);
+    }
   }
 
   return mergedTurns;
@@ -2549,63 +2585,160 @@ function mergeThreadTurn(
   currentTurn: ThreadTurn,
   nextTurn: ThreadTurn,
 ): ThreadTurn {
+  const preferNextTurn =
+    nextTurn.turnId !== undefined || currentTurn.turnId === undefined;
   return ThreadTurnSchema.parse({
-    ...currentTurn,
-    ...nextTurn,
-    items: mergeTurnItems(currentTurn.items, nextTurn.items),
+    ...(preferNextTurn ? currentTurn : nextTurn),
+    ...(preferNextTurn ? nextTurn : currentTurn),
+    turnId: nextTurn.turnId ?? currentTurn.turnId,
+    items: preferNextTurn
+      ? mergeTurnItems(nextTurn.items, currentTurn.items, "current")
+      : mergeTurnItems(currentTurn.items, nextTurn.items, "current"),
   });
 }
 
-function threadTurnKey(turn: ThreadTurn): string | null {
+function threadTurnKeys(turn: ThreadTurn): string[] {
+  const keys: string[] = [];
   if (turn.turnId && turn.turnId.trim().length > 0) {
-    return `turnId:${turn.turnId}`;
+    const value = turn.turnId.trim();
+    keys.push(`turnId:${value}`);
+    keys.push(`turn:${value}`);
   }
   if (turn.id && turn.id.trim().length > 0) {
-    return `id:${turn.id}`;
+    const value = turn.id.trim();
+    keys.push(`id:${value}`);
+    keys.push(`turn:${value}`);
   }
-  return null;
+  return keys;
 }
 
 function mergeTurnItems(
   currentItems: TurnItem[],
   nextItems: TurnItem[],
+  preferredItem: "current" | "next" = "next",
 ): TurnItem[] {
-  const nextItemsById = new Map(nextItems.map((item) => [turnItemKey(item), item]));
+  const nextItemsByKey = new Map<string, TurnItem>();
+  for (const nextItem of nextItems) {
+    for (const key of turnItemKeys(nextItem)) {
+      nextItemsByKey.set(key, nextItem);
+    }
+  }
   const mergedItems: TurnItem[] = [];
-  const seenIds = new Set<string>();
+  const seenKeys = new Set<string>();
 
   for (const currentItem of currentItems) {
-    const currentItemId = turnItemKey(currentItem);
-    const nextItem = nextItemsById.get(currentItemId);
+    const currentItemKeys = turnItemKeys(currentItem);
+    if (currentItemKeys.some((key) => seenKeys.has(key))) {
+      continue;
+    }
+    const nextItem =
+      currentItemKeys
+        .map((key) => nextItemsByKey.get(key))
+        .find(Boolean) ?? null;
     if (!nextItem) {
       mergedItems.push(currentItem);
+      for (const key of currentItemKeys) {
+        seenKeys.add(key);
+      }
       continue;
     }
 
-    mergedItems.push(mergeTurnItem(currentItem, nextItem));
-    seenIds.add(currentItemId);
+    mergedItems.push(
+      preferredItem === "current"
+        ? mergeTurnItem(nextItem, currentItem)
+        : mergeTurnItem(currentItem, nextItem),
+    );
+    for (const key of [
+      ...currentItemKeys,
+      ...turnItemKeys(nextItem),
+    ]) {
+      seenKeys.add(key);
+    }
   }
 
   for (const nextItem of nextItems) {
-    if (seenIds.has(turnItemKey(nextItem))) {
+    const nextItemKeys = turnItemKeys(nextItem);
+    if (nextItemKeys.some((key) => seenKeys.has(key))) {
       continue;
     }
     mergedItems.push(nextItem);
+    for (const key of nextItemKeys) {
+      seenKeys.add(key);
+    }
   }
 
   return mergedItems;
 }
 
-function turnItemKey(item: TurnItem): string {
+function turnItemKeys(item: TurnItem): string[] {
+  const keys = [`id:${item.type}:${turnItemId(item)}`];
+  const contentKey = turnItemContentKey(item);
+  if (contentKey) {
+    keys.push(contentKey);
+  }
+  return keys;
+}
+
+function turnItemId(item: TurnItem): string {
   switch (item.type) {
+    case "message":
+      return `message:${item.role}:${JSON.stringify(item.content)}`;
+    case "local_shell_call":
+      return item.call_id ?? `local_shell_call:${JSON.stringify(item.action)}`;
     case "custom_tool_call":
     case "custom_tool_call_output":
     case "function_call":
     case "function_call_output":
+    case "tool_search_call":
+    case "tool_search_output":
       return item.id ?? item.call_id;
+    case "web_search_call":
+      return item.id ?? `web_search_call:${JSON.stringify(item.action)}`;
+    case "ghost_snapshot":
+      return `ghost_snapshot:${JSON.stringify(item.ghost_commit)}`;
+    case "compaction":
+      return `compaction:${item.encrypted_content}`;
+    case "other":
+      return "other";
+    case "automaticApprovalReview":
+      return item.id;
+    case "mcpServerElicitation":
+      return item.id;
     default:
       return item.id;
   }
+}
+
+function turnItemContentKey(item: TurnItem): string | null {
+  switch (item.type) {
+    case "agentMessage":
+      return `agentMessage:${item.text}`;
+    case "userMessage":
+    case "steeringUserMessage":
+      return `${item.type}:${userMessageContentKey(item.content)}`;
+    default:
+      return null;
+  }
+}
+
+function userMessageContentKey(
+  content: Extract<TurnItem, { type: "userMessage" | "steeringUserMessage" }>["content"],
+): string {
+  return content
+    .map((part) => {
+      switch (part.type) {
+        case "text":
+          return `text:${part.text}`;
+        case "image":
+          return `image:${part.url}`;
+        case "localImage":
+          return `localImage:${part.path}`;
+        case "skill":
+        case "mention":
+          return `${part.type}:${part.name}:${part.path}`;
+      }
+    })
+    .join("\n");
 }
 
 function mergeTurnItem(currentItem: TurnItem, nextItem: TurnItem): TurnItem {
@@ -3053,7 +3186,7 @@ function updateThreadItem(
   }
 
   const nextItems = [...turn.items];
-  const itemIndex = nextItems.findIndex((item) => turnItemKey(item) === itemId);
+  const itemIndex = nextItems.findIndex((item) => turnItemId(item) === itemId);
   if (itemIndex === -1) {
     return null;
   }
@@ -3091,9 +3224,9 @@ function upsertTurnItem(
   }
 
   const nextItems = [...turn.items];
-  const nextItemId = turnItemKey(nextItem);
+  const nextItemId = turnItemId(nextItem);
   const itemIndex = nextItems.findIndex(
-    (item) => turnItemKey(item) === nextItemId,
+    (item) => turnItemId(item) === nextItemId,
   );
   if (itemIndex === -1) {
     nextItems.push(nextItem);

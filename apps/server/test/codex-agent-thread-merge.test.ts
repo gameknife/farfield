@@ -80,4 +80,134 @@ describe("mergeThreadConversationStates", () => {
       "commandExecution",
     ]);
   });
+
+  it("dedupes stream turns and synthetic message item ids against read-thread ids", () => {
+    const currentThread = parseThreadConversationState({
+      id: "thread-1",
+      turns: [
+        {
+          id: "turn-1",
+          status: "completed",
+          items: [
+            {
+              id: "item-1",
+              type: "userMessage",
+              content: [{ type: "text", text: "Hello" }],
+            },
+            {
+              id: "item-2",
+              type: "agentMessage",
+              text: "Hi",
+            },
+          ],
+        },
+        {
+          id: "turn-1",
+          status: "completed",
+          items: [
+            {
+              id: "item-3",
+              type: "userMessage",
+              content: [{ type: "text", text: "Hello" }],
+            },
+            {
+              id: "item-4",
+              type: "agentMessage",
+              text: "Hi",
+            },
+          ],
+        },
+      ],
+      requests: [],
+    });
+
+    const nextReadThread = parseThreadConversationState({
+      id: "thread-1",
+      turns: [
+        {
+          id: "turn-1",
+          turnId: "turn-1",
+          status: "completed",
+          items: [
+            {
+              id: "real-user-1",
+              type: "userMessage",
+              content: [{ type: "text", text: "Hello" }],
+            },
+            {
+              id: "real-agent-1",
+              type: "agentMessage",
+              text: "Hi",
+            },
+          ],
+        },
+      ],
+      requests: [],
+    });
+
+    const merged = mergeThreadConversationStates(currentThread, nextReadThread);
+
+    expect(merged.turns).toHaveLength(1);
+    expect(merged.turns[0]?.items).toHaveLength(2);
+    expect(merged.turns[0]?.items.map((item) => item.id)).toEqual([
+      "real-user-1",
+      "real-agent-1",
+    ]);
+  });
+
+  it("dedupes duplicate turns already present in read-thread state", () => {
+    const currentThread = parseThreadConversationState({
+      id: "thread-1",
+      turns: [],
+      requests: [],
+    });
+
+    const nextReadThread = parseThreadConversationState({
+      id: "thread-1",
+      turns: [
+        {
+          id: "turn-1",
+          turnId: "turn-1",
+          status: "completed",
+          items: [
+            {
+              id: "real-user-1",
+              type: "userMessage",
+              content: [{ type: "text", text: "Hello" }],
+            },
+            {
+              id: "real-agent-1",
+              type: "agentMessage",
+              text: "Hi",
+            },
+          ],
+        },
+        {
+          id: "turn-1",
+          status: "completed",
+          items: [
+            {
+              id: "item-1",
+              type: "userMessage",
+              content: [{ type: "text", text: "Hello" }],
+            },
+            {
+              id: "item-2",
+              type: "agentMessage",
+              text: "Hi",
+            },
+          ],
+        },
+      ],
+      requests: [],
+    });
+
+    const merged = mergeThreadConversationStates(currentThread, nextReadThread);
+
+    expect(merged.turns).toHaveLength(1);
+    expect(merged.turns[0]?.items.map((item) => item.id)).toEqual([
+      "real-user-1",
+      "real-agent-1",
+    ]);
+  });
 });
