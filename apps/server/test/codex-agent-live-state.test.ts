@@ -25,6 +25,7 @@ const connectionListeners: Array<
 const serverRequestListeners: AppServerRequestListener[] = [];
 const serverNotificationListeners: AppServerNotificationListener[] = [];
 const submitUserInputCalls: UserInputRequestId[] = [];
+const readThreadCalls: string[] = [];
 
 let readThreadResponse: AppServerReadThreadResponse;
 let listThreadsResponse: AppServerListThreadsResponse;
@@ -76,9 +77,10 @@ vi.mock("@farfield/api", async (importOriginal) => {
     }
 
     public async readThread(
-      _threadId: string,
+      threadId: string,
       _includeTurns = true,
     ): Promise<AppServerReadThreadResponse> {
+      readThreadCalls.push(threadId);
       return readThreadResponse;
     }
 
@@ -215,6 +217,27 @@ function createCommandApprovalRequest(
   );
 }
 
+function createLegacyExecCommandApprovalRequest(
+  threadId: string,
+  requestId: UserInputRequestId,
+): AppServerServerRequest {
+  return AppServerServerRequestSchema.parse(
+    ThreadConversationRequestSchema.parse({
+      id: requestId,
+      method: "execCommandApproval",
+      params: {
+        conversationId: threadId,
+        callId: `call-${String(requestId)}`,
+        approvalId: `approval-${String(requestId)}`,
+        command: ["echo", "hello"],
+        cwd: "/tmp/project",
+        parsedCmd: [],
+        reason: "Allow echo",
+      },
+    }),
+  );
+}
+
 function emitServerRequest(request: AppServerServerRequest): void {
   for (const listener of serverRequestListeners) {
     listener(request);
@@ -238,6 +261,7 @@ describe("CodexAgentAdapter app-server pending requests", () => {
     serverRequestListeners.splice(0, serverRequestListeners.length);
     serverNotificationListeners.splice(0, serverNotificationListeners.length);
     submitUserInputCalls.splice(0, submitUserInputCalls.length);
+    readThreadCalls.splice(0, readThreadCalls.length);
 
     listThreadsResponse = {
       data: [],
@@ -311,6 +335,68 @@ describe("CodexAgentAdapter app-server pending requests", () => {
     ).toHaveLength(1);
 
     emitServerRequest(createCommandApprovalRequest(threadId, 9, true));
+
+    const result = await adapter.readThread({
+      threadId,
+      includeTurns: true,
+    });
+    expect(result.thread.requests).toHaveLength(0);
+  });
+
+  it("routes legacy app-server approval requests by conversationId", async () => {
+    const threadId = "thread-legacy-request";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+
+    emitServerRequest(createLegacyExecCommandApprovalRequest(threadId, 15));
+
+    expect(readThreadCalls).toContain(threadId);
+
+    const result = await adapter.readThread({
+      threadId,
+      includeTurns: true,
+    });
+    expect(result.thread.requests).toHaveLength(1);
+    expect(result.thread.requests[0]?.method).toBe("execCommandApproval");
+  });
+
+  it("evicts cached requests after an authoritative read stops listing them", async () => {
+    const threadId = "thread-authoritative-request-eviction";
+    const adapter = createAdapter();
+    const request = ThreadConversationRequestSchema.parse(
+      createCommandApprovalRequest(threadId, 17),
+    );
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+
+    emitServerRequest(createCommandApprovalRequest(threadId, 17));
+    expect(
+      (
+        await adapter.readThread({
+          threadId,
+          includeTurns: true,
+        })
+      ).thread.requests,
+    ).toHaveLength(1);
+
+    readThreadResponse = {
+      thread: createThreadState(threadId, [request]),
+    };
+    expect(
+      (
+        await adapter.readThread({
+          threadId,
+          includeTurns: true,
+        })
+      ).thread.requests,
+    ).toHaveLength(1);
+
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
 
     const result = await adapter.readThread({
       threadId,

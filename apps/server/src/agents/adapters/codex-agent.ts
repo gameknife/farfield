@@ -55,6 +55,11 @@ type StreamSnapshotOrigin = "stream" | "readThreadWithTurns" | "readThread";
 type ThreadTurn = z.infer<typeof ThreadTurnSchema>;
 type TurnItem = z.infer<typeof TurnItemSchema>;
 
+type PendingAppServerRequestEntry = {
+  request: ThreadConversationRequest;
+  seenInAuthoritativeRead: boolean;
+};
+
 interface PendingThreadRefresh {
   sourceClientId: string | null;
   origin: StreamSnapshotOrigin;
@@ -130,7 +135,7 @@ export class CodexAgentAdapter implements AgentAdapter {
   private readonly threadOwnerById = new Map<string, string>();
   private readonly pendingAppServerRequestsByThreadId = new Map<
     string,
-    ThreadConversationRequest[]
+    PendingAppServerRequestEntry[]
   >();
   private readonly streamEventsByThreadId = new Map<string, IpcFrame[]>();
   private readonly activeTurnIdByThreadId = new Map<string, string>();
@@ -302,8 +307,8 @@ export class CodexAgentAdapter implements AgentAdapter {
       void this.handleServerNotification(notification);
     });
     this.appClient.onServerRequest((request) => {
-      this.capturePendingAppServerRequest(request);
-      void this.handleServerRequest(request);
+      const threadId = this.capturePendingAppServerRequest(request);
+      void this.handleServerRequest(request, threadId);
     });
   }
 
@@ -546,6 +551,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     const parsedThread = this.applyPendingCollaborationMode(
       this.mergePendingAppServerRequests(
         parseThreadConversationState(result.thread),
+        { authoritativeRead: true },
       ),
     );
     const existingSnapshot = this.streamSnapshotByThreadId.get(input.threadId);
@@ -723,6 +729,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     const parsedThreadForRequest = this.applyPendingCollaborationMode(
       this.mergePendingAppServerRequests(
         parseThreadConversationState(threadForRequest.thread),
+        { authoritativeRead: true },
       ),
     );
     const pendingRequest = findPendingRequestWithId(
@@ -860,7 +867,7 @@ export class CodexAgentAdapter implements AgentAdapter {
 
   private capturePendingAppServerRequest(
     request: AppServerServerRequest,
-  ): void {
+  ): string | null {
     const parsedRequest = ThreadConversationRequestSchema.safeParse(request);
     if (!parsedRequest.success) {
       logger.error(
@@ -870,12 +877,12 @@ export class CodexAgentAdapter implements AgentAdapter {
         },
         "codex-app-server-request-parse-failed",
       );
-      return;
+      return null;
     }
 
     const threadId = extractThreadIdFromConversationRequest(parsedRequest.data);
     if (!threadId) {
-      return;
+      return null;
     }
 
     this.upsertPendingAppServerRequest(threadId, parsedRequest.data);
@@ -884,6 +891,7 @@ export class CodexAgentAdapter implements AgentAdapter {
       threadId,
       request: parsedRequest.data,
     });
+    return threadId;
   }
 
   private upsertPendingAppServerRequest(
@@ -892,7 +900,7 @@ export class CodexAgentAdapter implements AgentAdapter {
   ): void {
     const current = this.pendingAppServerRequestsByThreadId.get(threadId) ?? [];
     const next = current.filter(
-      (entry) => !requestIdsMatch(entry.id, request.id),
+      (entry) => !requestIdsMatch(entry.request.id, request.id),
     );
     if (request.completed === true) {
       if (next.length === 0) {
@@ -902,7 +910,10 @@ export class CodexAgentAdapter implements AgentAdapter {
       this.pendingAppServerRequestsByThreadId.set(threadId, next);
       return;
     }
-    next.push(request);
+    next.push({
+      request,
+      seenInAuthoritativeRead: false,
+    });
     this.pendingAppServerRequestsByThreadId.set(threadId, next);
   }
 
@@ -915,7 +926,9 @@ export class CodexAgentAdapter implements AgentAdapter {
       return;
     }
 
-    const next = current.filter((entry) => !requestIdsMatch(entry.id, requestId));
+    const next = current.filter((entry) =>
+      !requestIdsMatch(entry.request.id, requestId),
+    );
     if (next.length === 0) {
       this.pendingAppServerRequestsByThreadId.delete(threadId);
       return;
@@ -926,22 +939,44 @@ export class CodexAgentAdapter implements AgentAdapter {
 
   private mergePendingAppServerRequests(
     state: ThreadConversationState,
+    options: { authoritativeRead: boolean } = { authoritativeRead: false },
   ): ThreadConversationState {
-    const pendingRequests = this.pendingAppServerRequestsByThreadId.get(state.id);
-    if (!pendingRequests || pendingRequests.length === 0) {
+    const cachedEntries = this.pendingAppServerRequestsByThreadId.get(state.id);
+    if (!cachedEntries || cachedEntries.length === 0) {
       return state;
     }
 
     const mergedRequests = [...state.requests];
-    for (const pendingRequest of pendingRequests) {
-      if (
-        mergedRequests.some((request) =>
-          requestIdsMatch(request.id, pendingRequest.id),
-        )
-      ) {
+    const nextCachedEntries: PendingAppServerRequestEntry[] = [];
+    for (const cachedEntry of cachedEntries) {
+      const authoritativeRequest = state.requests.find((request) =>
+        requestIdsMatch(request.id, cachedEntry.request.id),
+      );
+
+      if (authoritativeRequest) {
+        if (authoritativeRequest.completed !== true) {
+          nextCachedEntries.push({
+            request: authoritativeRequest,
+            seenInAuthoritativeRead:
+              cachedEntry.seenInAuthoritativeRead ||
+              options.authoritativeRead,
+          });
+        }
         continue;
       }
-      mergedRequests.push(pendingRequest);
+
+      if (options.authoritativeRead && cachedEntry.seenInAuthoritativeRead) {
+        continue;
+      }
+
+      nextCachedEntries.push(cachedEntry);
+      mergedRequests.push(cachedEntry.request);
+    }
+
+    if (nextCachedEntries.length === 0) {
+      this.pendingAppServerRequestsByThreadId.delete(state.id);
+    } else {
+      this.pendingAppServerRequestsByThreadId.set(state.id, nextCachedEntries);
     }
 
     return {
@@ -984,10 +1019,14 @@ export class CodexAgentAdapter implements AgentAdapter {
 
   private async handleServerRequest(
     request: AppServerServerRequest,
+    threadId: string | null,
   ): Promise<void> {
+    if (!threadId) {
+      return;
+    }
     await this.refreshThreadFromAppServer(
-      request.params.threadId,
-      this.resolveVisibleOwnerClientId(request.params.threadId),
+      threadId,
+      this.resolveVisibleOwnerClientId(threadId),
       "readThreadWithTurns",
     );
     this.emitAppFrame({
@@ -995,7 +1034,7 @@ export class CodexAgentAdapter implements AgentAdapter {
       kind: "request",
       frame: request,
       method: request.method,
-      threadId: request.params.threadId,
+      threadId,
     });
   }
 

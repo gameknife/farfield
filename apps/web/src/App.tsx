@@ -754,6 +754,13 @@ function buildPendingRequestKey(
   return `${request.method}:${String(request.id)}`;
 }
 
+function isTransientThreadRegistrationError(
+  message: string,
+  threadId: string,
+): boolean {
+  return message === `Thread ${threadId} is not registered`;
+}
+
 function mergePendingRequests(
   primary: NonNullable<ReadThreadResponse["thread"]>["requests"],
   secondary: NonNullable<ReadThreadResponse["thread"]>["requests"],
@@ -763,14 +770,14 @@ function mergePendingRequests(
       .filter((request) => request.completed === true)
       .map(buildPendingRequestKey),
   );
-  const merged = primary.filter(
+  const merged = secondary.filter(
     (request) =>
       request.completed !== true &&
       !completedKeys.has(buildPendingRequestKey(request)),
   );
   const seenKeys = new Set(merged.map(buildPendingRequestKey));
 
-  for (const request of secondary) {
+  for (const request of primary) {
     const requestKey = buildPendingRequestKey(request);
     if (request.completed === true || completedKeys.has(requestKey)) {
       continue;
@@ -2574,7 +2581,9 @@ export function App(): React.JSX.Element {
 
       if (!shouldLoadStreamEvents) {
         if (selectedThreadIdRef.current === threadId) {
-          setError("");
+          setError((current) =>
+            isTransientThreadRegistrationError(current, threadId) ? "" : current,
+          );
         }
         return;
       }
@@ -2605,7 +2614,9 @@ export function App(): React.JSX.Element {
           }
           return stream.events;
         });
-        setError("");
+        setError((current) =>
+          isTransientThreadRegistrationError(current, threadId) ? "" : current,
+        );
       });
     },
     [

@@ -16,6 +16,14 @@ export const JsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
 export const UnifiedProviderIdSchema = z.enum(["codex", "opencode"]);
 export type UnifiedProviderId = z.infer<typeof UnifiedProviderIdSchema>;
 
+export const UnifiedApprovalPolicySchema = z.enum([
+  "untrusted",
+  "on-failure",
+  "on-request",
+  "never"
+]);
+export type UnifiedApprovalPolicy = z.infer<typeof UnifiedApprovalPolicySchema>;
+
 export const UNIFIED_FEATURE_IDS = [
   "listThreads",
   "createThread",
@@ -985,7 +993,7 @@ const UnifiedCommandCreateThreadSchema = z
     modelProvider: z.string().optional(),
     personality: z.string().optional(),
     sandbox: z.string().optional(),
-    approvalPolicy: z.string().optional(),
+    approvalPolicy: UnifiedApprovalPolicySchema.optional(),
     ephemeral: z.boolean().optional()
   })
   .strict();
@@ -1023,7 +1031,7 @@ const UnifiedCommandSendMessageSchema = z
       .strict()
       .optional(),
     isSteering: z.boolean().optional(),
-    approvalPolicy: z.string().optional()
+    approvalPolicy: UnifiedApprovalPolicySchema.optional()
   })
   .strict();
 
