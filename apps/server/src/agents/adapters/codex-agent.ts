@@ -136,6 +136,15 @@ const IPC_THREAD_REFRESH_DEBOUNCE_MS = 1_500;
 const THREAD_REFRESH_RETRY_DELAY_MS = 600;
 const CONNECTION_CHECK_MIN_INTERVAL_MS = 2_000;
 
+type ThreadActionRoute =
+  | {
+      kind: "desktop-owner";
+      ownerClientId: string;
+    }
+  | {
+      kind: "app-server";
+    };
+
 export class CodexAgentAdapter implements AgentAdapter {
   public readonly id = "codex";
   public readonly label = "Codex";
@@ -311,8 +320,7 @@ export class CodexAgentAdapter implements AgentAdapter {
 
       if (frame.type === "broadcast" && threadId) {
         if (sourceClientId && !isSelfOriginatedBroadcast) {
-          this.threadOwnerById.set(threadId, sourceClientId);
-          this.desktopOwnedThreadIds.add(threadId);
+          this.recordDesktopThreadOwner(threadId, sourceClientId);
         }
       }
 
@@ -653,24 +661,18 @@ export class CodexAgentAdapter implements AgentAdapter {
     if (text.length === 0) {
       throw new Error("Message text is required");
     }
-    const visibleOwnerClientId = this.resolveVisibleOwnerClientId(
+    const route = this.resolveThreadActionRoute(
       input.threadId,
       input.ownerClientId,
     );
-    if (visibleOwnerClientId) {
-      this.threadOwnerById.set(input.threadId, visibleOwnerClientId);
-      this.desktopOwnedThreadIds.add(input.threadId);
-    } else if (this.desktopOwnedThreadIds.has(input.threadId)) {
-      this.throwDisconnectedDesktopOwner(input.threadId);
-    }
 
     const sendTurn = async (): Promise<void> => {
       if (input.isSteering === true) {
-        if (visibleOwnerClientId) {
+        if (route.kind === "desktop-owner") {
           try {
             await this.startTurnThroughOwnerClient(
               input.threadId,
-              visibleOwnerClientId,
+              route.ownerClientId,
               {
                 threadId: input.threadId,
                 input: [{ type: "text", text }],
@@ -691,7 +693,7 @@ export class CodexAgentAdapter implements AgentAdapter {
             }
             this.clearDisconnectedDesktopOwner(
               input.threadId,
-              visibleOwnerClientId,
+              route.ownerClientId,
             );
           }
         }
@@ -743,11 +745,11 @@ export class CodexAgentAdapter implements AgentAdapter {
           : {}),
         attachments: [],
       });
-      if (visibleOwnerClientId) {
+      if (route.kind === "desktop-owner") {
         try {
           await this.startTurnThroughOwnerClient(
             input.threadId,
-            visibleOwnerClientId,
+            route.ownerClientId,
             turnStartParams,
             false,
           );
@@ -758,7 +760,7 @@ export class CodexAgentAdapter implements AgentAdapter {
           }
           this.clearDisconnectedDesktopOwner(
             input.threadId,
-            visibleOwnerClientId,
+            route.ownerClientId,
           );
         }
       }
@@ -767,7 +769,7 @@ export class CodexAgentAdapter implements AgentAdapter {
     await this.runThreadOperationWithResumeRetry(input.threadId, sendTurn);
     this.scheduleThreadRefresh(
       input.threadId,
-      visibleOwnerClientId,
+      route.kind === "desktop-owner" ? route.ownerClientId : null,
       "readThreadWithTurns",
       APP_SERVER_THREAD_REFRESH_DEBOUNCE_MS,
     );
@@ -807,19 +809,20 @@ export class CodexAgentAdapter implements AgentAdapter {
     input: AgentSetCollaborationModeInput,
   ): Promise<{ ownerClientId: string }> {
     this.ensureCodexAvailable();
-    const ownerClientId = this.resolveVisibleOwnerClientId(
+    const route = this.resolveThreadActionRoute(
       input.threadId,
       input.ownerClientId,
     );
-    if (ownerClientId) {
+
+    if (route.kind === "desktop-owner") {
       this.syncModelAndReasoningThroughOwnerClient(
         input.threadId,
-        ownerClientId,
+        route.ownerClientId,
         input.collaborationMode,
       );
       this.syncCollaborationModeThroughOwnerClient(
         input.threadId,
-        ownerClientId,
+        route.ownerClientId,
         input.collaborationMode,
       );
     }
@@ -836,18 +839,19 @@ export class CodexAgentAdapter implements AgentAdapter {
         input.threadId,
         nextSnapshot,
         this.canonicalThreadStateOriginById.get(input.threadId) ?? "readThread",
-        ownerClientId,
+        route.kind === "desktop-owner" ? route.ownerClientId : null,
         true,
       );
       this.broadcastThreadSnapshotToOwner(
         input.threadId,
         nextSnapshot,
-        ownerClientId,
+        route.kind === "desktop-owner" ? route.ownerClientId : null,
       );
     }
 
     return {
-      ownerClientId: ownerClientId ?? "farfield",
+      ownerClientId:
+        route.kind === "desktop-owner" ? route.ownerClientId : "farfield",
     };
   }
 
@@ -2399,6 +2403,40 @@ export class CodexAgentAdapter implements AgentAdapter {
     return null;
   }
 
+  private resolveThreadActionRoute(
+    threadId: string,
+    ownerClientIdOverride?: string,
+  ): ThreadActionRoute {
+    const ownerClientId = this.resolveVisibleOwnerClientId(
+      threadId,
+      ownerClientIdOverride,
+    );
+    if (ownerClientId) {
+      this.recordDesktopThreadOwner(threadId, ownerClientId);
+      return {
+        kind: "desktop-owner",
+        ownerClientId,
+      };
+    }
+
+    if (this.desktopOwnedThreadIds.has(threadId)) {
+      this.throwDisconnectedDesktopOwner(threadId);
+    }
+
+    if (this.isIpcReady()) {
+      this.throwUnregisteredDesktopOwner(threadId);
+    }
+
+    return {
+      kind: "app-server",
+    };
+  }
+
+  private recordDesktopThreadOwner(threadId: string, ownerClientId: string): void {
+    this.threadOwnerById.set(threadId, ownerClientId);
+    this.desktopOwnedThreadIds.add(threadId);
+  }
+
   private clearVisibleOwnerClientId(
     threadId: string,
     ownerClientId: string,
@@ -2426,6 +2464,12 @@ export class CodexAgentAdapter implements AgentAdapter {
   private throwDisconnectedDesktopOwner(threadId: string): never {
     throw new Error(
       `Codex desktop owner for thread ${threadId} is no longer connected. Reopen this thread in Codex and retry.`,
+    );
+  }
+
+  private throwUnregisteredDesktopOwner(threadId: string): never {
+    throw new Error(
+      `Codex desktop owner for thread ${threadId} is not registered. Open this thread in Codex and retry.`,
     );
   }
 

@@ -2,6 +2,29 @@
 
 This repo is Farfield — a local UI for Codex desktop threads.
 
+## Product Contract: Codex Desktop Sync First
+
+Farfield is first and foremost a bidirectional UI for the Codex desktop app. A user action in Farfield must preserve the same thread state that the Codex app sees, and a user action in the Codex app must be reflected back into Farfield.
+
+The Codex desktop IPC owner is the primary route for thread mutations:
+
+- Sending user messages or steering messages.
+- Changing Plan/Default mode.
+- Changing model or reasoning effort.
+- Responding to desktop-owned approvals and user-input requests.
+
+The app-server action route is secondary. Use it only when the Codex desktop IPC route is not connected/initialized or when the request was explicitly created by the app-server responder. Do not silently send a desktop-owned or desktop-ready thread action through the app-server route just because the desktop owner is missing or stale.
+
+Thread action routing must stay centralized. New mutation paths should resolve through the shared thread action route instead of independently checking owner maps or calling app-server mutation methods. If a thread is known to be desktop-owned and its owner cannot be reached, fail clearly and ask the user to reopen/reconnect the thread in Codex rather than creating split state.
+
+Tests must encode these product invariants:
+
+- Desktop-owned sends go through desktop IPC only.
+- Stale desktop owners do not become app-server sends.
+- If desktop IPC is ready but a thread has no registered owner, thread mutations fail clearly.
+- Plan mode, model, and effort changes use the same owner route as sends.
+- App-server submissions stay on app-server only when the app-server created the request.
+
 ## Absolutely Immutable Extremely Important Rules
 
 ABSOLUTELY NO FALLBACKS. Do not even SAY the word "fallback" to me.
