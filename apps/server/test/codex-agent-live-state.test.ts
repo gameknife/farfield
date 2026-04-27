@@ -250,6 +250,42 @@ function createLegacyExecCommandApprovalRequest(
   );
 }
 
+function createUserInputRequest(
+  threadId: string,
+  requestId: UserInputRequestId,
+): AppServerServerRequest {
+  return AppServerServerRequestSchema.parse(
+    ThreadConversationRequestSchema.parse({
+      id: requestId,
+      method: "item/tool/requestUserInput",
+      params: {
+        threadId,
+        turnId: `turn-${String(requestId)}`,
+        itemId: `item-${String(requestId)}`,
+        questions: [
+          {
+            id: "choice",
+            header: "Pick",
+            question: "Pick one option",
+            isOther: false,
+            isSecret: false,
+            options: [
+              {
+                label: "A",
+                description: "First option",
+              },
+              {
+                label: "B",
+                description: "Second option",
+              },
+            ],
+          },
+        ],
+      },
+    }),
+  );
+}
+
 function emitServerRequest(request: AppServerServerRequest): void {
   for (const listener of serverRequestListeners) {
     listener(request);
@@ -555,6 +591,76 @@ describe("CodexAgentAdapter app-server pending requests", () => {
 
     expect(submitUserInputCalls).toEqual([11]);
     expect(readThreadCalls).toEqual([]);
+  });
+
+  it("routes owned user input requests through the desktop follower client", async () => {
+    const threadId = "thread-owned-user-input-request";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+
+    emitServerRequest(createUserInputRequest(threadId, 12));
+
+    await adapter.submitUserInput({
+      threadId,
+      ownerClientId: "client-1",
+      requestId: 12,
+      response: {
+        answers: {
+          choice: {
+            answers: ["A"],
+          },
+        },
+      },
+    });
+
+    expect(submitUserInputCalls).toEqual([]);
+    expect(ipcRequestCalls).toEqual([
+      {
+        method: "thread-follower-submit-user-input",
+        params: {
+          conversationId: threadId,
+          requestId: 12,
+          response: {
+            answers: {
+              choice: {
+                answers: ["A"],
+              },
+            },
+          },
+        },
+        options: {
+          targetClientId: "client-1",
+          version: 1,
+        },
+      },
+    ]);
+  });
+
+  it("submits unowned user input requests to app server", async () => {
+    const threadId = "thread-unowned-user-input-request";
+    const adapter = createAdapter();
+    readThreadResponse = {
+      thread: createThreadState(threadId),
+    };
+
+    emitServerRequest(createUserInputRequest(threadId, 13));
+
+    await adapter.submitUserInput({
+      threadId,
+      requestId: 13,
+      response: {
+        answers: {
+          choice: {
+            answers: ["B"],
+          },
+        },
+      },
+    });
+
+    expect(submitUserInputCalls).toEqual([13]);
+    expect(ipcRequestCalls).toEqual([]);
   });
 
   it("removes cached pending requests when app-server marks them complete", async () => {

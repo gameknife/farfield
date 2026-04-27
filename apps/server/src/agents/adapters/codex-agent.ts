@@ -20,6 +20,7 @@ import {
   parseThreadStreamStateChangedBroadcast,
   parseCommandExecutionRequestApprovalResponse,
   parseFileChangeRequestApprovalResponse,
+  parseToolRequestUserInputResponsePayload,
   parseUserInputResponsePayload,
   TurnStartParamsSchema,
   type IpcFrame,
@@ -810,6 +811,31 @@ export class CodexAgentAdapter implements AgentAdapter {
           },
           {
             ...(ownerClientId ? { targetClientId: ownerClientId } : {}),
+            version: 1,
+          },
+        );
+        break;
+      }
+
+      case "item/tool/requestUserInput": {
+        const userInputResponse =
+          parseToolRequestUserInputResponsePayload(parsedResponse);
+        if (!ownerClientId) {
+          await this.runAppServerCall(() =>
+            this.appClient.submitUserInput(input.requestId, userInputResponse),
+          );
+          break;
+        }
+
+        await this.ipcClient.sendRequestAndWait(
+          "thread-follower-submit-user-input",
+          {
+            conversationId: input.threadId,
+            requestId: input.requestId,
+            response: userInputResponse,
+          },
+          {
+            targetClientId: ownerClientId,
             version: 1,
           },
         );
