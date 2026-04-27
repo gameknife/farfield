@@ -734,7 +734,9 @@ async function buildRealtimeCoreState() {
           cursor: null,
         }),
       ),
-      timeServerOperation("realtimeCoreRateLimits", () => readRateLimitsSafe()),
+      timeServerOperation("realtimeCoreRateLimits", () =>
+        readRateLimitsForRealtime(),
+      ),
       Promise.resolve(
         buildUnifiedFeatureMatrix({
           codex: codexAdapter,
@@ -995,6 +997,21 @@ async function readRateLimitsSafe():
   } catch {
     return null;
   }
+}
+
+async function readRateLimitsForRealtime():
+  Promise<AppServerGetAccountRateLimitsResponse | null> {
+  const nowMs = Date.now();
+  if (rateLimitsCacheEntry && rateLimitsCacheEntry.expiresAtMs > nowMs) {
+    return rateLimitsCacheEntry.value;
+  }
+
+  void readRateLimitsShared()
+    .then(() => {
+      queueCoreDelta?.();
+    })
+    .catch(() => undefined);
+  return null;
 }
 
 async function readRateLimitsShared():

@@ -4003,7 +4003,15 @@ export function App(): React.JSX.Element {
         <div className="h-full min-h-0 overflow-y-auto overflow-x-hidden py-2 pl-2 pr-0">
           {threads.length === 0 && (
             <div className="px-4 py-6 text-xs text-muted-foreground text-center space-y-3">
-              <div>{isCoreLoading ? "Loading threads..." : "No threads"}</div>
+              <div>
+                {isCoreLoading ? (
+                  <span className="reasoning-shimmer font-medium">
+                    Loading threads...
+                  </span>
+                ) : (
+                  "No threads"
+                )}
+              </div>
               {!isCoreLoading &&
                 availableAgentIds.length > 0 &&
                 (availableAgentIds.length === 1 ? (

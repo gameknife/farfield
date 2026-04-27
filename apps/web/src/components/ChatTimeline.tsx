@@ -67,13 +67,17 @@ export const ChatTimeline = memo(function ChatTimeline({
           >
             {turnsLength === 0 ? (
               <div className="text-center py-20 text-sm text-muted-foreground">
-                {isLoading
-                  ? "Loading thread..."
-                  : selectedThreadId
-                  ? "No messages yet"
-                  : hasAnyAgent
-                    ? "Start typing to create a new thread"
-                    : "Select a thread from the sidebar"}
+                {isLoading ? (
+                  <span className="reasoning-shimmer font-medium">
+                    Loading thread...
+                  </span>
+                ) : selectedThreadId ? (
+                  "No messages yet"
+                ) : hasAnyAgent ? (
+                  "Start typing to create a new thread"
+                ) : (
+                  "Select a thread from the sidebar"
+                )}
               </div>
             ) : (
               <motion.div
