@@ -748,6 +748,77 @@ describe("unified provider adapters", () => {
                 call_id: "call-function-1",
                 output: "today",
               },
+              {
+                type: "tool_search_call",
+                call_id: "call-tool-search-1",
+                status: "completed",
+                execution: "client",
+                arguments: {
+                  query: "node_repl js JavaScript execution",
+                  limit: 3,
+                },
+              },
+              {
+                type: "tool_search_output",
+                call_id: "call-tool-search-1",
+                status: "completed",
+                execution: "client",
+                tools: [
+                  {
+                    type: "namespace",
+                    name: "mcp__node_repl__",
+                    tools: [],
+                  },
+                ],
+              },
+              {
+                type: "web_search_call",
+                status: "completed",
+                action: {
+                  type: "search",
+                  query: "Farfield PR testing",
+                  queries: ["Farfield PR testing"],
+                },
+              },
+              {
+                type: "message",
+                role: "assistant",
+                content: [
+                  {
+                    type: "output_text",
+                    text: "raw assistant text",
+                  },
+                ],
+              },
+              {
+                type: "local_shell_call",
+                call_id: "call-local-shell-1",
+                status: "completed",
+                action: {
+                  type: "exec",
+                  command: ["rtk", "date"],
+                  working_directory: "/tmp/project",
+                },
+              },
+              {
+                type: "automaticApprovalReview",
+                id: "automatic-approval-review-1",
+                status: "approved",
+                riskLevel: null,
+                userAuthorization: null,
+                rationale: null,
+              },
+              {
+                type: "mcpServerElicitation",
+                id: "mcp-server-elicitation-1",
+                requestId: 1,
+                turnId: "turn-1",
+                elicitation: {
+                  message: "Allow Codex to use Google Chrome?",
+                },
+                completed: true,
+                action: "accept",
+              },
             ],
           },
         ],
@@ -816,5 +887,61 @@ describe("unified provider adapters", () => {
         ? functionCallOutputItem.contentItems?.[0]?.type
         : null,
     ).toBe("inputText");
+
+    const toolSearchCallItem = result.thread.turns[0]?.items[6];
+    expect(toolSearchCallItem?.type).toBe("dynamicToolCall");
+    expect(
+      toolSearchCallItem && toolSearchCallItem.type === "dynamicToolCall"
+        ? toolSearchCallItem.tool
+        : null,
+    ).toBe("tool_search");
+
+    const toolSearchOutputItem = result.thread.turns[0]?.items[7];
+    expect(toolSearchOutputItem?.type).toBe("dynamicToolCall");
+    expect(
+      toolSearchOutputItem && toolSearchOutputItem.type === "dynamicToolCall"
+        ? toolSearchOutputItem.contentItems?.[0]?.type
+        : null,
+    ).toBe("inputText");
+
+    const rawWebSearchItem = result.thread.turns[0]?.items[8];
+    expect(rawWebSearchItem?.type).toBe("webSearch");
+    expect(
+      rawWebSearchItem && rawWebSearchItem.type === "webSearch"
+        ? rawWebSearchItem.query
+        : null,
+    ).toBe("Farfield PR testing");
+
+    const rawMessageItem = result.thread.turns[0]?.items[9];
+    expect(rawMessageItem?.type).toBe("agentMessage");
+    expect(
+      rawMessageItem && rawMessageItem.type === "agentMessage"
+        ? rawMessageItem.text
+        : null,
+    ).toBe("raw assistant text");
+
+    const rawLocalShellItem = result.thread.turns[0]?.items[10];
+    expect(rawLocalShellItem?.type).toBe("commandExecution");
+    expect(
+      rawLocalShellItem && rawLocalShellItem.type === "commandExecution"
+        ? rawLocalShellItem.command
+        : null,
+    ).toBe("rtk date");
+
+    const approvalReviewItem = result.thread.turns[0]?.items[11];
+    expect(approvalReviewItem?.type).toBe("dynamicToolCall");
+    expect(
+      approvalReviewItem && approvalReviewItem.type === "dynamicToolCall"
+        ? approvalReviewItem.tool
+        : null,
+    ).toBe("automaticApprovalReview");
+
+    const elicitationItem = result.thread.turns[0]?.items[12];
+    expect(elicitationItem?.type).toBe("dynamicToolCall");
+    expect(
+      elicitationItem && elicitationItem.type === "dynamicToolCall"
+        ? elicitationItem.tool
+        : null,
+    ).toBe("mcpServerElicitation");
   });
 });

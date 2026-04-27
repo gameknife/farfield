@@ -312,6 +312,76 @@ export const WebSearchItemSchema = z
   })
   .passthrough();
 
+export const RawResponseContentTextItemSchema = z
+  .object({
+    type: z.union([z.literal("input_text"), z.literal("output_text")]),
+    text: z.string()
+  })
+  .passthrough();
+
+export const RawResponseContentImageItemSchema = z
+  .object({
+    type: z.literal("input_image"),
+    image_url: z.string()
+  })
+  .passthrough();
+
+export const RawResponseContentItemSchema = z.union([
+  RawResponseContentTextItemSchema,
+  RawResponseContentImageItemSchema
+]);
+
+export const RawResponseMessageItemSchema = z
+  .object({
+    type: z.literal("message"),
+    role: z.string(),
+    content: z.array(RawResponseContentItemSchema),
+    end_turn: z.boolean().optional(),
+    phase: NullableStringSchema.optional()
+  })
+  .passthrough();
+
+export const RawLocalShellStatusSchema = z.enum([
+  "completed",
+  "in_progress",
+  "incomplete"
+]);
+
+export const RawLocalShellExecActionSchema = z
+  .object({
+    type: z.literal("exec"),
+    command: z.array(z.string()),
+    timeout_ms: z.union([z.number().int(), z.string(), z.null()]).optional(),
+    working_directory: NullableStringSchema.optional(),
+    env: z.union([z.record(z.string()), z.null()]).optional(),
+    user: NullableStringSchema.optional()
+  })
+  .passthrough();
+
+export const RawLocalShellCallItemSchema = z
+  .object({
+    type: z.literal("local_shell_call"),
+    call_id: NullableNonEmptyStringSchema,
+    status: RawLocalShellStatusSchema,
+    action: RawLocalShellExecActionSchema
+  })
+  .passthrough();
+
+export const RawWebSearchStatusSchema = z.enum([
+  "in_progress",
+  "completed",
+  "failed"
+]);
+
+export const RawWebSearchCallItemSchema = z
+  .object({
+    type: z.literal("web_search_call"),
+    id: NonEmptyStringSchema.optional(),
+    status: RawWebSearchStatusSchema,
+    action: WebSearchActionSchema
+  })
+  .passthrough();
+
 export const DynamicToolCallOutputTextContentItemSchema = z
   .object({
     type: z.literal("inputText"),
@@ -374,7 +444,7 @@ export const CustomToolCallOutputItemSchema = z
     type: z.literal("custom_tool_call_output"),
     id: NonEmptyStringSchema.optional(),
     call_id: NonEmptyStringSchema,
-    output: z.string()
+    output: JsonValueSchema
   })
   .passthrough();
 
@@ -393,7 +463,80 @@ export const FunctionCallOutputItemSchema = z
     type: z.literal("function_call_output"),
     id: NonEmptyStringSchema.optional(),
     call_id: NonEmptyStringSchema,
-    output: z.string()
+    output: JsonValueSchema
+  })
+  .passthrough();
+
+export const ToolSearchStatusSchema = z.enum([
+  "in_progress",
+  "completed",
+  "failed"
+]);
+
+export const ToolSearchExecutionSchema = z.enum(["client", "server"]);
+
+export const ToolSearchCallItemSchema = z
+  .object({
+    type: z.literal("tool_search_call"),
+    id: NonEmptyStringSchema.optional(),
+    call_id: NonEmptyStringSchema,
+    status: ToolSearchStatusSchema,
+    execution: ToolSearchExecutionSchema,
+    arguments: JsonValueSchema
+  })
+  .passthrough();
+
+export const ToolSearchOutputItemSchema = z
+  .object({
+    type: z.literal("tool_search_output"),
+    id: NonEmptyStringSchema.optional(),
+    call_id: NonEmptyStringSchema,
+    status: ToolSearchStatusSchema,
+    execution: ToolSearchExecutionSchema,
+    tools: z.array(JsonValueSchema)
+  })
+  .passthrough();
+
+export const GhostSnapshotItemSchema = z
+  .object({
+    type: z.literal("ghost_snapshot"),
+    ghost_commit: JsonValueSchema
+  })
+  .passthrough();
+
+export const RawCompactionItemSchema = z
+  .object({
+    type: z.literal("compaction"),
+    encrypted_content: z.string()
+  })
+  .passthrough();
+
+export const RawOtherItemSchema = z
+  .object({
+    type: z.literal("other")
+  })
+  .passthrough();
+
+export const AutomaticApprovalReviewItemSchema = z
+  .object({
+    type: z.literal("automaticApprovalReview"),
+    id: NonEmptyStringSchema,
+    status: NonEmptyStringSchema,
+    riskLevel: NullableNonEmptyStringSchema.optional(),
+    userAuthorization: NullableNonEmptyStringSchema.optional(),
+    rationale: NullableStringSchema.optional()
+  })
+  .passthrough();
+
+export const McpServerElicitationItemSchema = z
+  .object({
+    type: z.literal("mcpServerElicitation"),
+    id: NonEmptyStringSchema,
+    requestId: z.union([NonNegativeIntSchema, NonEmptyStringSchema]),
+    turnId: NonEmptyStringSchema,
+    elicitation: JsonValueSchema,
+    completed: z.boolean().optional(),
+    action: NullableStringSchema.optional()
   })
   .passthrough();
 
@@ -529,12 +672,22 @@ export const TurnItemSchema = z.discriminatedUnion("type", [
   FileChangeItemSchema,
   ContextCompactionItemSchema,
   WebSearchItemSchema,
+  RawResponseMessageItemSchema,
+  RawLocalShellCallItemSchema,
+  RawWebSearchCallItemSchema,
   McpToolCallItemSchema,
   DynamicToolCallItemSchema,
   CustomToolCallItemSchema,
   CustomToolCallOutputItemSchema,
   FunctionCallItemSchema,
   FunctionCallOutputItemSchema,
+  ToolSearchCallItemSchema,
+  ToolSearchOutputItemSchema,
+  GhostSnapshotItemSchema,
+  RawCompactionItemSchema,
+  RawOtherItemSchema,
+  AutomaticApprovalReviewItemSchema,
+  McpServerElicitationItemSchema,
   CollabAgentToolCallItemSchema,
   ImageViewItemSchema,
   EnteredReviewModeItemSchema,
