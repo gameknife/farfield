@@ -1510,7 +1510,9 @@ describe("App", () => {
     fireEvent.change(await screen.findByRole("textbox"), {
       target: { value: "Plan this change" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    const sendButton = await screen.findByRole("button", { name: "Send" });
+    await waitFor(() => expect(sendButton.getAttribute("disabled")).toBeNull());
+    fireEvent.click(sendButton);
 
     type UnifiedCommandPayload = {
       kind?: string;
@@ -1659,7 +1661,9 @@ describe("App", () => {
     fireEvent.change(await screen.findByRole("textbox"), {
       target: { value: "Use the thread model" },
     });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+    const sendButton = await screen.findByRole("button", { name: "Send" });
+    await waitFor(() => expect(sendButton.getAttribute("disabled")).toBeNull());
+    fireEvent.click(sendButton);
 
     type UnifiedCommandPayload = {
       kind?: string;
