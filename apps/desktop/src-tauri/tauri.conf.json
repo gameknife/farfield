@@ -1,0 +1,37 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Farfield",
+  "version": "0.1.0",
+  "identifier": "dev.farfield.client",
+  "build": {
+    "beforeDevCommand": "bun run dev:web",
+    "beforeBuildCommand": "bun run prepare:web",
+    "devUrl": "http://127.0.0.1:4312",
+    "frontendDist": "../dist/web"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Farfield",
+        "width": 1280,
+        "height": 820,
+        "minWidth": 900,
+        "minHeight": 620,
+        "resizable": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": ["icons/icon.ico"],
+    "publisher": "Farfield",
+    "category": "DeveloperTool",
+    "shortDescription": "Farfield desktop client",
+    "longDescription": "A Tauri desktop wrapper for the Farfield client UI."
+  }
+}

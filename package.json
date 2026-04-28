@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "node scripts/dev.mjs",
     "dev:remote": "node scripts/dev.mjs --remote",
+    "desktop:dev": "bun run --filter @farfield/desktop dev",
+    "desktop:build:windows": "bun run --filter @farfield/desktop build:windows",
     "server": "bun run --filter @farfield/server dev:remote",
     "build": "bun run --workspaces build",
     "start": "bun run --parallel --filter @farfield/server --filter @farfield/web start",

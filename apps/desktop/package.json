@@ -1,0 +1,21 @@
+{
+  "name": "@farfield/desktop",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun run prepare:web && cargo build --manifest-path src-tauri/Cargo.toml",
+    "dev": "tauri dev",
+    "dev:web": "bun run --filter @farfield/web dev -- --host 127.0.0.1 --port 4312 --strictPort",
+    "prepare:web": "node scripts/prepare-web-dist.mjs",
+    "build:windows": "tauri build --bundles nsis,msi",
+    "check": "node scripts/check.mjs",
+    "lint": "bun run check",
+    "test": "bun run check",
+    "typecheck": "bun run check && cargo check --manifest-path src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.10.1",
+    "zod": "^3.24.1"
+  }
+}
