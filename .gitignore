@@ -4,8 +4,10 @@ node_modules
 dist
 coverage
 *.tsbuildinfo
+*.bun-build
 target
 apps/desktop/src-tauri/gen/
+apps/desktop/src-tauri/binaries/
 
 # Local traces and extracted desktop artifacts
 traces/

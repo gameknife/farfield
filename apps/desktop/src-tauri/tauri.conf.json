@@ -4,8 +4,8 @@
   "version": "0.1.0",
   "identifier": "dev.farfield.client",
   "build": {
-    "beforeDevCommand": "bun run dev:web",
-    "beforeBuildCommand": "bun run prepare:web",
+    "beforeDevCommand": "bun run prepare:server-bin && bun run dev:web",
+    "beforeBuildCommand": "bun run prepare:bundle",
     "devUrl": "http://127.0.0.1:4312",
     "frontendDist": "../dist/web"
   },
@@ -29,6 +29,7 @@
     "active": true,
     "targets": ["nsis", "msi"],
     "icon": ["icons/icon.ico"],
+    "externalBin": ["binaries/farfield-server"],
     "publisher": "Farfield",
     "category": "DeveloperTool",
     "shortDescription": "Farfield desktop client",

@@ -15,8 +15,8 @@ const TauriConfigSchema = z
     identifier: z.literal("dev.farfield.client"),
     build: z
       .object({
-        beforeDevCommand: z.literal("bun run dev:web"),
-        beforeBuildCommand: z.literal("bun run prepare:web"),
+        beforeDevCommand: z.literal("bun run prepare:server-bin && bun run dev:web"),
+        beforeBuildCommand: z.literal("bun run prepare:bundle"),
         devUrl: z.literal("http://127.0.0.1:4312"),
         frontendDist: z.literal("../dist/web"),
       })
@@ -50,6 +50,7 @@ const TauriConfigSchema = z
         active: z.literal(true),
         targets: z.tuple([z.literal("nsis"), z.literal("msi")]),
         icon: z.tuple([z.literal("icons/icon.ico")]),
+        externalBin: z.tuple([z.literal("binaries/farfield-server")]),
         publisher: z.literal("Farfield"),
         category: z.literal("DeveloperTool"),
         shortDescription: z.literal("Farfield desktop client"),

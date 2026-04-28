@@ -4,9 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun run prepare:web && cargo build --manifest-path src-tauri/Cargo.toml",
+    "build": "bun run prepare:bundle && cargo build --manifest-path src-tauri/Cargo.toml",
     "dev": "tauri dev",
     "dev:web": "bun run --filter @farfield/web dev -- --host 127.0.0.1 --port 4312 --strictPort",
+    "prepare:bundle": "bun run prepare:server-bin && bun run prepare:web",
+    "prepare:server-bin": "node scripts/prepare-server-bin.mjs",
     "prepare:web": "node scripts/prepare-web-dist.mjs",
     "build:windows": "tauri build --bundles nsis,msi",
     "check": "node scripts/check.mjs",
