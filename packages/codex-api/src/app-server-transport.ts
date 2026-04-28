@@ -1,4 +1,8 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import {
+  execFile,
+  spawn,
+  type ChildProcessWithoutNullStreams
+} from "node:child_process";
 import { randomUUID } from "node:crypto";
 import readline from "node:readline";
 import {
@@ -400,6 +404,42 @@ export class ChildProcessAppServerTransport implements AppServerTransport {
     await this.writePayload(payload, "notification");
   }
 
+  private async terminateProcess(
+    processHandle: ChildProcessWithoutNullStreams
+  ): Promise<void> {
+    if (process.platform !== "win32") {
+      processHandle.kill("SIGTERM");
+      return;
+    }
+
+    const pid = processHandle.pid;
+    if (pid === undefined) {
+      throw new AppServerTransportError(
+        "failed to terminate app-server process tree: child pid unavailable"
+      );
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      execFile(
+        "taskkill",
+        ["/F", "/T", "/PID", String(pid)],
+        { windowsHide: true },
+        (error) => {
+          if (!error) {
+            resolve();
+            return;
+          }
+
+          reject(
+            new AppServerTransportError(
+              `failed to terminate app-server process tree: ${error.message}`
+            )
+          );
+        }
+      );
+    });
+  }
+
   private async sendRequest(
     method: AppServerClientRequestMethod,
     params: JsonRpcRequest["params"],
@@ -520,6 +560,6 @@ export class ChildProcessAppServerTransport implements AppServerTransport {
     this.initializeInFlight = null;
     this.rejectAll(new AppServerTransportError("app-server transport closed"));
 
-    processHandle.kill("SIGTERM");
+    await this.terminateProcess(processHandle);
   }
 }
