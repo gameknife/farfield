@@ -2013,12 +2013,34 @@ export function App(): React.JSX.Element {
     const visibleEntries = renderableTurns
       .slice(startTurnIndex)
       .flatMap((renderableTurn) => renderableTurn.entries);
+    const compactTimelineItemTypes: readonly ConversationTurnItem["type"][] = [
+      "commandExecution",
+      "fileChange",
+      "webSearch",
+      "mcpToolCall",
+      "dynamicToolCall",
+      "collabAgentToolCall",
+      "imageView",
+      "enteredReviewMode",
+      "exitedReviewMode",
+      "remoteTaskCreated",
+      "modelChanged",
+      "forkedFromConversation",
+    ];
+    const isCompactTimelineItem = (
+      item: FlatConversationItem["item"] | undefined,
+    ): boolean =>
+      item !== undefined && compactTimelineItemTypes.includes(item.type);
+
     const visibleItems: FlatConversationItem[] = visibleEntries.map(
       (entry, index) => {
         const previousEntry = visibleEntries[index - 1];
         const nextEntry = visibleEntries[index + 1];
         const startsNewTurn = previousEntry?.turnIndex !== entry.turnIndex;
-        const spacingTop = index === 0 ? 0 : startsNewTurn ? 16 : 10;
+        const previousIsCompact = isCompactTimelineItem(previousEntry?.item);
+        const currentIsCompact = isCompactTimelineItem(entry.item);
+        const spacingTop =
+          index === 0 ? 0 : previousIsCompact && currentIsCompact ? 2 : startsNewTurn ? 16 : 10;
 
         return {
           key: entry.key,

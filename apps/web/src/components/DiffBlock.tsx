@@ -1,9 +1,8 @@
 import React, { memo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
-import { ChevronRight, FilePlus, FileMinus, FileEdit } from "lucide-react";
+import { FilePlus, FileMinus, FileEdit } from "lucide-react";
 import { languageFromPath } from "@/lib/code-language";
-import { Button } from "@/components/ui/button";
 import { CodeSnippet } from "./CodeSnippet";
+import { ToolCallRow } from "./ToolCallRow";
 
 interface FileChange {
   path: string;
@@ -44,12 +43,11 @@ function parseDiff(raw: string): DiffLine[] {
 
 function kindMeta(kind: string) {
   if (kind === "create")
-    return { Icon: FilePlus, label: "created", cls: "text-success" };
+    return { Icon: FilePlus, cls: "text-success" };
   if (kind === "delete")
-    return { Icon: FileMinus, label: "deleted", cls: "text-danger" };
+    return { Icon: FileMinus, cls: "text-danger" };
   return {
     Icon: FileEdit,
-    label: "modified",
     cls: "text-blue-400 dark:text-blue-400",
   };
 }
@@ -98,7 +96,7 @@ function DiffBlockComponent({ changes }: DiffBlockProps) {
   }, [changes]);
 
   return (
-    <div className="rounded-xl border border-border overflow-hidden text-sm">
+    <div className="text-sm">
       {changes.map((change, i) => {
         const isExpanded = expandedIdx === i;
         const fileName = change.path.split("/").pop() ?? change.path;
@@ -107,57 +105,35 @@ function DiffBlockComponent({ changes }: DiffBlockProps) {
         const previewLanguage = languageFromPath(change.path);
         const added = lines.filter((line) => line.type === "add").length;
         const removed = lines.filter((line) => line.type === "remove").length;
-        const { Icon, label, cls } = kindMeta(change.kind.type);
+        const { Icon, cls } = kindMeta(change.kind.type);
 
         return (
-          <div key={i} className={i > 0 ? "border-t border-border" : ""}>
-            <Button
-              type="button"
-              onClick={() => setExpandedIdx(isExpanded ? null : i)}
-              variant="ghost"
-              className="h-auto w-full justify-start rounded-none bg-muted/40 px-3 py-2.5 text-left transition-colors hover:bg-muted/70"
+          <div key={i} className={i > 0 ? "mt-0.5" : ""}>
+            <ToolCallRow
+              icon={Icon}
+              iconClassName={cls}
+              title={
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="truncate">{fileName}</span>
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {added > 0 && (
+                      <span className="text-success">+{added}</span>
+                    )}
+                    {removed > 0 && (
+                      <span className="text-danger">−{removed}</span>
+                    )}
+                  </span>
+                  {dirPath && (
+                    <span className="hidden truncate text-[11px] text-muted-foreground/40 sm:block">
+                      {dirPath}
+                    </span>
+                  )}
+                </span>
+              }
+              expanded={isExpanded}
+              onToggle={() => setExpandedIdx(isExpanded ? null : i)}
             >
-              <Icon size={12} className={`shrink-0 ${cls}`} />
-              <span className="font-mono text-xs font-medium text-foreground truncate">
-                {fileName}
-              </span>
-              {dirPath && (
-                <span className="text-[11px] text-muted-foreground/40 truncate hidden sm:block">
-                  {dirPath}
-                </span>
-              )}
-              <div className="flex items-center gap-2 ml-auto shrink-0">
-                {added > 0 && (
-                  <span className="text-xs font-mono text-success">
-                    +{added}
-                  </span>
-                )}
-                {removed > 0 && (
-                  <span className="text-xs font-mono text-danger">
-                    −{removed}
-                  </span>
-                )}
-                <span className={`text-[10px] font-medium ${cls}`}>
-                  {label}
-                </span>
-                <ChevronRight
-                  size={11}
-                  className={`text-muted-foreground/50 transition-transform duration-150 ${isExpanded ? "rotate-90" : ""}`}
-                />
-              </div>
-            </Button>
-
-            <AnimatePresence initial={false}>
-              {isExpanded && (
-                <motion.div
-                  key={`diff-${i}`}
-                  initial={{ height: 0, opacity: 0 }}
-                  animate={{ height: "auto", opacity: 1 }}
-                  exit={{ height: 0, opacity: 0 }}
-                  transition={{ duration: 0.24, ease: "easeInOut" }}
-                  className="overflow-hidden"
-                >
-                  <div className="border-t border-border overflow-x-auto">
+                  <div className="overflow-x-auto">
                     {change.diff ? (
                       lines.map((line, j) => (
                         <div
@@ -191,9 +167,7 @@ function DiffBlockComponent({ changes }: DiffBlockProps) {
                       </div>
                     )}
                   </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
+            </ToolCallRow>
           </div>
         );
       })}

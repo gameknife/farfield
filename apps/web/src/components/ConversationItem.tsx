@@ -1,11 +1,20 @@
 import { memo } from "react";
-import { GitBranch } from "lucide-react";
+import {
+  GitBranch,
+  Image as ImageIcon,
+  Search,
+  SquarePen,
+  Users,
+  Wrench,
+} from "lucide-react";
 import type { UnifiedItem, UnifiedItemKind } from "@farfield/unified-surface";
+import { formatDurationSeconds } from "@/lib/tool-call-ui";
 import { ReasoningBlock } from "./ReasoningBlock";
 import { CommandBlock } from "./CommandBlock";
 import { DiffBlock } from "./DiffBlock";
 import { MarkdownText } from "./MarkdownText";
 import { McpToolBlock } from "./McpToolBlock";
+import { ToolCallRow } from "./ToolCallRow";
 
 type UserMessageLikeItem = Extract<
   UnifiedItem,
@@ -28,7 +37,11 @@ const TOOL_BLOCK_TYPES: readonly UnifiedItem["type"][] = [
   "mcpToolCall",
   "dynamicToolCall",
   "collabAgentToolCall",
+  "imageView",
+  "enteredReviewMode",
+  "exitedReviewMode",
   "remoteTaskCreated",
+  "modelChanged",
   "forkedFromConversation",
 ];
 
@@ -40,12 +53,7 @@ function toolBlockSpacingClass(
   previousItemType: UnifiedItem["type"] | undefined,
   nextItemType: UnifiedItem["type"] | undefined,
 ): string {
-  const previousIsTool = isToolBlockType(previousItemType);
-  const nextIsTool = isToolBlockType(nextItemType);
-  if (previousIsTool && nextIsTool) return "my-1";
-  if (previousIsTool) return "mt-1 mb-2";
-  if (nextIsTool) return "mt-2 mb-1";
-  return "my-2";
+  return "";
 }
 
 function readTextContent(content: UserMessageLikeItem["content"]): string {
@@ -92,6 +100,18 @@ function trimInjectedBrowserContext(text: string): string {
       ? requestText.slice(0, imageBoilerplateIndex)
       : requestText
   ).trim();
+}
+
+function toolStatusText(status: string): React.JSX.Element | null {
+  if (status === "inProgress") {
+    return <span className="reasoning-shimmer">running</span>;
+  }
+
+  if (status === "failed") {
+    return <span className="text-danger/80">failed</span>;
+  }
+
+  return null;
 }
 
 interface RendererContext {
@@ -267,16 +287,16 @@ const ITEM_RENDERERS = {
   ),
 
   webSearch: ({ item, toolSpacing }) => (
-    <div
-      className={`${toolSpacing} rounded-lg border border-border bg-muted/20 px-3 py-2`}
+    <ToolCallRow
+      icon={Search}
+      iconClassName="text-blue-400"
+      title="Web search"
+      className={toolSpacing}
     >
-      <div className="text-[10px] text-muted-foreground font-mono mb-1 uppercase tracking-wider">
-        Web search
-      </div>
       <div className="text-xs text-foreground/80 whitespace-pre-wrap break-words">
         {item.query}
       </div>
-    </div>
+    </ToolCallRow>
   ),
 
   mcpToolCall: ({ item, toolSpacing }) => (
@@ -285,24 +305,27 @@ const ITEM_RENDERERS = {
 
   dynamicToolCall: ({ item, toolSpacing }) => {
     const argumentsText = JSON.stringify(item.arguments);
+    const statusText = toolStatusText(item.status);
     return (
-      <div
-        className={`${toolSpacing} rounded-lg border border-border bg-muted/20 px-3 py-2`}
+      <ToolCallRow
+        icon={Wrench}
+        iconClassName="text-amber-400"
+        title={item.tool}
+        className={toolSpacing}
+        meta={
+          <span className="flex items-center gap-1.5">
+            {statusText}
+            {item.durationMs != null && (
+              <span>
+                {formatDurationSeconds(item.durationMs)}
+              </span>
+            )}
+          </span>
+        }
       >
-        <div className="text-[10px] text-muted-foreground font-mono mb-1 uppercase tracking-wider">
-          Tool call
-        </div>
-        <div className="text-xs text-foreground/90 whitespace-pre-wrap break-words">
-          {item.tool} ({item.status})
-        </div>
         {item.success !== undefined && item.success !== null && (
-          <div className="mt-1 text-[11px] text-muted-foreground font-mono">
+          <div className="text-[11px] text-muted-foreground">
             success: {item.success ? "yes" : "no"}
-          </div>
-        )}
-        {item.durationMs != null && (
-          <div className="mt-1 text-[11px] text-muted-foreground font-mono">
-            {item.durationMs}ms
           </div>
         )}
         {item.contentItems && item.contentItems.length > 0 && (
@@ -310,24 +333,22 @@ const ITEM_RENDERERS = {
             Output parts: {item.contentItems.length}
           </div>
         )}
-        <div className="mt-2 text-[11px] text-muted-foreground font-mono whitespace-pre-wrap break-all">
+        <div className="mt-2 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
           {argumentsText}
         </div>
-      </div>
+      </ToolCallRow>
     );
   },
 
   collabAgentToolCall: ({ item, toolSpacing }) => (
-    <div
-      className={`${toolSpacing} rounded-lg border border-border bg-muted/20 px-3 py-2`}
+    <ToolCallRow
+      icon={Users}
+      iconClassName="text-violet-400"
+      title={item.tool}
+      className={toolSpacing}
+      meta={toolStatusText(item.status)}
     >
-      <div className="text-[10px] text-muted-foreground font-mono mb-1 uppercase tracking-wider">
-        Collab tool
-      </div>
-      <div className="text-xs text-foreground/90 whitespace-pre-wrap break-words">
-        {item.tool} ({item.status})
-      </div>
-      <div className="mt-1 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
+      <div className="text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
         sender: {item.senderThreadId}
       </div>
       <div className="text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
@@ -338,53 +359,71 @@ const ITEM_RENDERERS = {
           {item.prompt}
         </div>
       )}
-    </div>
+    </ToolCallRow>
   ),
 
-  imageView: ({ item }) => (
-    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+  imageView: ({ item, toolSpacing }) => (
+    <ToolCallRow
+      icon={ImageIcon}
+      iconClassName="text-blue-400"
+      title="Viewed image"
+      className={toolSpacing}
+    >
       Viewed image: {item.path}
-    </div>
+    </ToolCallRow>
   ),
 
-  enteredReviewMode: ({ item }) => (
-    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+  enteredReviewMode: ({ item, toolSpacing }) => (
+    <ToolCallRow
+      icon={SquarePen}
+      iconClassName="text-blue-400"
+      title="Entered review mode"
+      className={toolSpacing}
+    >
       Entered review mode: {item.review}
-    </div>
+    </ToolCallRow>
   ),
 
-  exitedReviewMode: ({ item }) => (
-    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+  exitedReviewMode: ({ item, toolSpacing }) => (
+    <ToolCallRow
+      icon={SquarePen}
+      iconClassName="text-blue-400"
+      title="Exited review mode"
+      className={toolSpacing}
+    >
       Exited review mode: {item.review}
-    </div>
+    </ToolCallRow>
   ),
 
   remoteTaskCreated: ({ item, toolSpacing }) => (
-    <div
-      className={`${toolSpacing} rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground`}
+    <ToolCallRow
+      icon={Wrench}
+      iconClassName="text-amber-400"
+      title="Remote task"
+      className={toolSpacing}
     >
-      <div className="text-[10px] text-muted-foreground font-mono mb-1 uppercase tracking-wider">
-        Remote task
-      </div>
       <div className="text-xs text-foreground/90 whitespace-pre-wrap break-all">
         Created task: {item.taskId}
       </div>
-    </div>
+    </ToolCallRow>
   ),
 
-  modelChanged: (_args) => (
-    <div className="rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
-      Model changed
-    </div>
+  modelChanged: ({ toolSpacing }) => (
+    <ToolCallRow
+      icon={Wrench}
+      iconClassName="text-amber-400"
+      title="Model changed"
+      className={toolSpacing}
+    />
   ),
 
   forkedFromConversation: ({ item, onSelectThread, toolSpacing }) => (
-    <div
-      className={`${toolSpacing} rounded-lg border border-border bg-muted/20 px-3 py-2 text-xs text-muted-foreground`}
+    <ToolCallRow
+      icon={GitBranch}
+      iconClassName="text-muted-foreground/65"
+      title="Forked from"
+      className={toolSpacing}
     >
-      <div className="text-[10px] text-muted-foreground font-mono mb-1 uppercase tracking-wider">
-        Forked from
-      </div>
       <div className="flex items-center gap-1.5">
         <GitBranch size={13} className="text-muted-foreground/80 shrink-0" />
         <a
@@ -398,7 +437,7 @@ const ITEM_RENDERERS = {
           {item.sourceConversationTitle?.trim() || "Untitled thread"}
         </a>
       </div>
-    </div>
+    </ToolCallRow>
   ),
 
   steered: (_args) => null,

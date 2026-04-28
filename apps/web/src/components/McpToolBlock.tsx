@@ -1,19 +1,21 @@
 import { memo, useEffect, useRef, useState } from "react";
 import {
-  CheckCircle2,
-  ChevronRight,
   Code2,
   Keyboard,
-  Loader2,
   MousePointer2,
   Search,
   Wrench,
-  XCircle,
 } from "lucide-react";
 import { z } from "zod";
 import type { UnifiedItem } from "@farfield/unified-surface";
-import { Button } from "@/components/ui/button";
-import { CodeSnippet } from "./CodeSnippet";
+import { formatDurationSeconds } from "@/lib/tool-call-ui";
+import {
+  ToolCallDetailCode,
+  ToolCallDetailRows,
+  ToolCallDetails,
+  ToolCallDetailText,
+} from "./ToolCallDetails";
+import { ToolCallRow } from "./ToolCallRow";
 
 type McpToolItem = Extract<UnifiedItem, { type: "mcpToolCall" }>;
 
@@ -59,7 +61,6 @@ const ImageContentSchema = z
 interface DetailRow {
   label: string;
   value: string;
-  code?: boolean;
 }
 
 function formatToolTitle(item: McpToolItem): string {
@@ -112,15 +113,28 @@ function iconForTool(item: McpToolItem): React.ElementType {
   return Wrench;
 }
 
+function iconClassForTool(item: McpToolItem): string {
+  if (item.server === "node_repl" && item.tool === "js") {
+    return "text-violet-400";
+  }
+  if (item.server === "tool_search") {
+    return "text-blue-400";
+  }
+  if (item.server === "computer-use") {
+    return "text-amber-400";
+  }
+  return "text-muted-foreground/65";
+}
+
 function buildDetailRows(item: McpToolItem): DetailRow[] {
   if (item.server === "node_repl" && item.tool === "js") {
     const parsed = NodeReplJsArgumentsSchema.safeParse(item.arguments);
     if (!parsed.success) return [];
 
     return [
-      { label: "tool", value: `${item.server}/${item.tool}`, code: true },
+      { label: "tool", value: `${item.server}/${item.tool}` },
       ...(parsed.data.timeout_ms
-        ? [{ label: "timeout", value: `${parsed.data.timeout_ms}ms` }]
+        ? [{ label: "timeout", value: formatDurationSeconds(parsed.data.timeout_ms) }]
         : []),
     ];
   }
@@ -130,17 +144,17 @@ function buildDetailRows(item: McpToolItem): DetailRow[] {
     if (!parsed.success) return [];
 
     return [
-      { label: "tool", value: `${item.server}/${item.tool}`, code: true },
-      ...(parsed.data.app ? [{ label: "app", value: parsed.data.app, code: true }] : []),
+      { label: "tool", value: `${item.server}/${item.tool}` },
+      ...(parsed.data.app ? [{ label: "app", value: parsed.data.app }] : []),
       ...(parsed.data.element_index
-        ? [{ label: "element", value: parsed.data.element_index, code: true }]
+        ? [{ label: "element", value: parsed.data.element_index }]
         : []),
-      ...(parsed.data.key ? [{ label: "key", value: parsed.data.key, code: true }] : []),
+      ...(parsed.data.key ? [{ label: "key", value: parsed.data.key }] : []),
       ...(parsed.data.value
-        ? [{ label: "value", value: parsed.data.value, code: true }]
+        ? [{ label: "value", value: parsed.data.value }]
         : []),
       ...(parsed.data.text
-        ? [{ label: "text", value: parsed.data.text, code: parsed.data.text.length < 64 }]
+        ? [{ label: "text", value: parsed.data.text }]
         : []),
     ];
   }
@@ -150,13 +164,13 @@ function buildDetailRows(item: McpToolItem): DetailRow[] {
     if (!parsed.success) return [];
 
     return [
-      { label: "tool", value: `${item.server}/${item.tool}`, code: true },
+      { label: "tool", value: `${item.server}/${item.tool}` },
       ...(parsed.data.query ? [{ label: "query", value: parsed.data.query }] : []),
       ...(parsed.data.limit ? [{ label: "limit", value: String(parsed.data.limit) }] : []),
     ];
   }
 
-  return [{ label: "tool", value: `${item.server}/${item.tool}`, code: true }];
+  return [{ label: "tool", value: `${item.server}/${item.tool}` }];
 }
 
 function firstTextResult(item: McpToolItem): string | null {
@@ -181,43 +195,14 @@ function codeForNodeRepl(item: McpToolItem): string | null {
   return parsed.data.code;
 }
 
-function renderStatusIcon(item: McpToolItem): React.JSX.Element | null {
+function statusTextForTool(item: McpToolItem): { text: string; className: string } | null {
   if (item.status === "inProgress") {
-    return <Loader2 size={12} className="animate-spin text-muted-foreground" />;
-  }
-  if (item.status === "completed") {
-    return <CheckCircle2 size={12} className="text-success" />;
+    return { text: "running", className: "reasoning-shimmer" };
   }
   if (item.status === "failed") {
-    return <XCircle size={12} className="text-danger" />;
+    return { text: "failed", className: "text-danger/80" };
   }
   return null;
-}
-
-function DetailRows({ rows }: { rows: DetailRow[] }) {
-  if (rows.length === 0) return null;
-
-  return (
-    <div className="mt-2 grid gap-1">
-      {rows.map((row) => (
-        <div
-          key={`${row.label}:${row.value}`}
-          className="grid grid-cols-[5rem_minmax(0,1fr)] gap-2 text-[11px] leading-5"
-        >
-          <div className="text-muted-foreground/60">{row.label}</div>
-          <div className="min-w-0 text-foreground/80">
-            {row.code ? (
-              <code className="rounded bg-muted px-1 py-0.5 font-mono text-[10px]">
-                {row.value}
-              </code>
-            ) : (
-              <span className="whitespace-pre-wrap break-words">{row.value}</span>
-            )}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function McpToolBlockComponent({
@@ -244,76 +229,65 @@ function McpToolBlockComponent({
   const textResult = firstTextResult(item);
   const imageCount = imageResultCount(item);
   const contentCount = resultPartCount(item);
+  const statusText = statusTextForTool(item);
 
   return (
-    <div className={`${className ?? ""} rounded-xl border border-border overflow-hidden text-sm`}>
-      <Button
-        type="button"
-        onClick={() => setExpanded((current) => !current)}
-        variant="ghost"
-        className="h-auto w-full grid grid-cols-[minmax(0,1fr)_auto] gap-3 rounded-none bg-muted/40 px-3 py-2 text-left transition-colors hover:bg-muted/70"
+    <div className={`${className ?? ""} text-sm`}>
+      <ToolCallRow
+        icon={ToolIcon}
+        iconClassName={iconClassForTool(item)}
+        title={title}
+        expanded={expanded}
+        onToggle={() => setExpanded((current) => !current)}
+        meta={
+          <>
+            {statusText && (
+              <span className={statusText.className}>{statusText.text}</span>
+            )}
+            {item.durationMs != null && (
+              <span>{formatDurationSeconds(item.durationMs)}</span>
+            )}
+          </>
+        }
       >
-        <div className="min-w-0 flex items-center gap-2">
-          <ToolIcon size={13} className="shrink-0 text-muted-foreground/70" />
-          <div className="min-w-0">
-            <div className="truncate text-xs font-medium text-foreground/85">
-              {title}
-            </div>
-          </div>
-        </div>
-        <div className="shrink-0 flex items-center gap-1.5">
-          {renderStatusIcon(item)}
-          {item.durationMs != null && (
-            <span className="text-[11px] font-mono text-muted-foreground/50">
-              {item.durationMs}ms
-            </span>
-          )}
-          <ChevronRight
-            size={12}
-            className={`text-muted-foreground/60 transition-transform duration-150 ${expanded ? "rotate-90" : ""}`}
-          />
-        </div>
-      </Button>
-
-      {expanded && (details.length > 0 || nodeCode || item.error?.message || textResult) && (
-        <div className="border-t border-border/60 px-3 py-2">
-          <DetailRows rows={details} />
+        {(details.length > 0 || nodeCode || item.error?.message || textResult) && (
+          <ToolCallDetails>
+          <ToolCallDetailRows rows={details} />
 
           {nodeCode && (
-            <div className={details.length > 0 ? "mt-2" : ""}>
-              <CodeSnippet code={nodeCode} language="javascript" />
-            </div>
+            <ToolCallDetailCode
+              label="Code"
+              code={nodeCode}
+              language="javascript"
+            />
           )}
 
           {item.error?.message && (
-            <div className="mt-2 text-xs text-danger whitespace-pre-wrap break-words">
+            <ToolCallDetailText tone="danger">
               {item.error.message}
-            </div>
+            </ToolCallDetailText>
           )}
 
           {textResult && (
-            <div className={nodeCode || item.error?.message ? "mt-2" : ""}>
-              <div className="mb-1 text-[10px] uppercase tracking-wider text-muted-foreground/60">
-                Result
-              </div>
-              <CodeSnippet
-                code={textResult}
-                language="text"
-                className="max-h-56 overflow-y-auto"
-              />
-            </div>
+            <ToolCallDetailCode
+              label="Result"
+              code={textResult}
+              language="text"
+              className="max-h-56 overflow-y-auto"
+            />
           )}
 
           {(contentCount > 1 || imageCount > 0) && (
-            <div className="mt-2 text-[11px] text-muted-foreground/65">
+            <ToolCallDetailText>
               {contentCount} result part{contentCount === 1 ? "" : "s"}
               {imageCount > 0
                 ? `, ${imageCount} image${imageCount === 1 ? "" : "s"}`
                 : ""}
-            </div>
+            </ToolCallDetailText>
           )}
-        </div>
-      )}
+          </ToolCallDetails>
+        )}
+      </ToolCallRow>
     </div>
   );
 }
