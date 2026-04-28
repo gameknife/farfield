@@ -678,6 +678,44 @@ describe("unified provider adapters", () => {
     ).toBe("task-123");
   });
 
+  it("maps steered turn items into unified items", async () => {
+    const adapter = createCodexAdapter();
+    adapter.readThread = async () => ({
+      thread: {
+        ...SAMPLE_THREAD,
+        turns: [
+          {
+            id: "turn-1",
+            status: "inProgress",
+            items: [
+              {
+                id: "item-steered",
+                type: "steered",
+              },
+            ],
+          },
+        ],
+      },
+    });
+    const unified = new AgentUnifiedProviderAdapter("codex", adapter);
+
+    const result = await unified.execute(
+      UnifiedCommandSchema.parse({
+        kind: "readThread",
+        provider: "codex",
+        threadId: SAMPLE_THREAD.id,
+        includeTurns: true,
+      }),
+    );
+
+    expect(result.kind).toBe("readThread");
+    if (result.kind !== "readThread") {
+      return;
+    }
+
+    expect(result.thread.turns[0]?.items[0]?.type).toBe("steered");
+  });
+
   it("maps dynamicToolCall turn items and richer user message parts into unified items", async () => {
     const adapter = createCodexAdapter();
     adapter.readThread = async () => ({

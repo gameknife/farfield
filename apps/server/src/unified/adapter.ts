@@ -902,6 +902,8 @@ function turnItemIdForUnifiedMapping(item: ThreadTurnItem): string {
       return item.id;
     case "mcpServerElicitation":
       return item.id;
+    case "steered":
+      return item.id;
     default:
       return item.id;
   }
@@ -1889,6 +1891,12 @@ function mapTurnItem(
         ...(item.sourceConversationTitle !== undefined
           ? { sourceConversationTitle: item.sourceConversationTitle }
           : {}),
+      };
+
+    case "steered":
+      return {
+        id: item.id,
+        type: "steered",
       };
 
     default:

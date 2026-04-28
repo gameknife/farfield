@@ -405,6 +405,8 @@ const ITEM_RENDERERS = {
       </div>
     </div>
   ),
+
+  steered: (_args) => null,
 } satisfies ItemRendererMap;
 
 function assertNever(value: never): never {
@@ -460,6 +462,8 @@ function renderItem(
       return ITEM_RENDERERS.modelChanged({ item, ...context });
     case "forkedFromConversation":
       return ITEM_RENDERERS.forkedFromConversation({ item, ...context });
+    case "steered":
+      return null;
     default:
       return assertNever(item);
   }

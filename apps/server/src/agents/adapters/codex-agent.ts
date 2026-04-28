@@ -3358,6 +3358,8 @@ function turnItemId(item: TurnItem): string {
       return item.id;
     case "mcpServerElicitation":
       return item.id;
+    case "steered":
+      return item.id;
     default:
       return item.id;
   }

@@ -995,6 +995,26 @@ describe("codex-protocol schemas", () => {
     expect(parsed.turns[0]?.items[0]?.type).toBe("forkedFromConversation");
   });
 
+  it("parses thread conversation state with steered item", () => {
+    const parsed = parseThreadConversationState({
+      id: "thread-123",
+      turns: [
+        {
+          status: "completed",
+          items: [
+            {
+              id: "item-steered",
+              type: "steered"
+            }
+          ]
+        }
+      ],
+      requests: []
+    });
+
+    expect(parsed.turns[0]?.items[0]?.type).toBe("steered");
+  });
+
   it("parses generic ipc request frames", () => {
     const parsed = parseIpcFrame({
       type: "request",

@@ -566,6 +566,13 @@ export const ForkedFromConversationItemSchema = z
   })
   .passthrough();
 
+export const SteeredItemSchema = z
+  .object({
+    type: z.literal("steered"),
+    id: NonEmptyStringSchema
+  })
+  .passthrough();
+
 export const McpToolCallStatusSchema = z.enum(["inProgress", "completed", "failed"]);
 
 export const McpToolCallResultSchema = z
@@ -694,7 +701,8 @@ export const TurnItemSchema = z.discriminatedUnion("type", [
   ExitedReviewModeItemSchema,
   RemoteTaskCreatedItemSchema,
   ModelChangedItemSchema,
-  ForkedFromConversationItemSchema
+  ForkedFromConversationItemSchema,
+  SteeredItemSchema
 ]);
 
 export const UserInputRequestIdSchema = GeneratedRequestIdSchema;

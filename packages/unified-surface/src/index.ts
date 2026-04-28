@@ -856,6 +856,13 @@ const UnifiedForkedFromConversationItemSchema = z
   })
   .strict();
 
+const UnifiedSteeredItemSchema = z
+  .object({
+    id: NonEmptyStringSchema,
+    type: z.literal("steered")
+  })
+  .strict();
+
 export const UnifiedItemSchema = z.discriminatedUnion("type", [
   UnifiedUserMessageItemSchema,
   UnifiedSteeringUserMessageItemSchema,
@@ -878,7 +885,8 @@ export const UnifiedItemSchema = z.discriminatedUnion("type", [
   UnifiedExitedReviewModeItemSchema,
   UnifiedRemoteTaskCreatedItemSchema,
   UnifiedModelChangedItemSchema,
-  UnifiedForkedFromConversationItemSchema
+  UnifiedForkedFromConversationItemSchema,
+  UnifiedSteeredItemSchema
 ]);
 
 export type UnifiedItem = z.infer<typeof UnifiedItemSchema>;
@@ -906,7 +914,8 @@ export const UNIFIED_ITEM_KINDS = [
   "exitedReviewMode",
   "remoteTaskCreated",
   "modelChanged",
-  "forkedFromConversation"
+  "forkedFromConversation",
+  "steered"
 ] as const satisfies ReadonlyArray<UnifiedItemKind>;
 
 export const UnifiedTurnSchema = z
@@ -1709,7 +1718,8 @@ const ITEM_KIND_COVERAGE: Record<UnifiedItemKind, true> = {
   exitedReviewMode: true,
   remoteTaskCreated: true,
   modelChanged: true,
-  forkedFromConversation: true
+  forkedFromConversation: true,
+  steered: true
 };
 
 const FEATURE_ID_COVERAGE: Record<UnifiedFeatureId, true> = {
